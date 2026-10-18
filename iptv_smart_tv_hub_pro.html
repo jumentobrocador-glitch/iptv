@@ -1,0 +1,2335 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>IPTV Smart TV Hub - Multi-Lista & Fullscreen OSD</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- HLS.js para reprodução de streams .m3u8 -->
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <!-- Font Inter & Phosphor Icons -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        tv: {
+                            950: '#07080d',
+                            900: '#0e111a',
+                            800: '#161b29',
+                            700: '#232a3f',
+                            600: '#323c59'
+                        },
+                        accent: {
+                            400: '#818cf8',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        /* Scrollbars discretas estilo TV */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0e111a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #232a3f;
+            border-radius: 9999px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6366f1;
+        }
+
+        /* Estilo de Foco 10-Foot UI (Smart TV / Controle Remoto / D-Pad) */
+        .tv-focusable {
+            transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+                        box-shadow 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+                        border-color 0.16s ease,
+                        background-color 0.16s ease;
+            outline: none !important;
+        }
+
+        .tv-focusable:focus,
+        .tv-focusable.tv-focused {
+            transform: scale(1.03);
+            border-color: #818cf8 !important;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.65), 0 12px 30px -5px rgba(0, 0, 0, 0.8) !important;
+            z-index: 20;
+        }
+
+        /* Animações suaves para OSD e Modais */
+        .osd-fade {
+            transition: opacity 0.28s ease, transform 0.28s ease;
+        }
+        .osd-hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        .osd-hidden .osd-top {
+            transform: translateY(-20px);
+        }
+        .osd-hidden .osd-bottom {
+            transform: translateY(20px);
+        }
+
+        /* Esconder cursor quando OSD estiver oculto no player */
+        .cursor-none-forced {
+            cursor: none !important;
+        }
+    </style>
+</head>
+<body class="bg-tv-950 text-slate-100 font-sans antialiased h-screen w-screen flex flex-col overflow-hidden select-none">
+
+    <!-- =====================================================================
+         BARRA DE TOPO ESTILO SMART TV (10-FOOT UI)
+         ===================================================================== -->
+    <header class="bg-tv-900/95 border-b border-tv-700/70 px-4 lg:px-6 py-3 flex flex-wrap items-center justify-between gap-3 shrink-0 z-20">
+        
+        <!-- Identidade & Seletor de Lista Ativa -->
+        <div class="flex items-center gap-3 sm:gap-4">
+            <div class="w-11 h-11 rounded-2xl bg-gradient-to-br from-accent-500 to-indigo-700 flex items-center justify-center shadow-lg shadow-accent-500/25 shrink-0">
+                <i class="ph-fill ph-television-simple text-2xl text-white"></i>
+            </div>
+            <div>
+                <div class="flex items-center gap-2">
+                    <h1 class="font-extrabold text-base sm:text-lg tracking-tight text-white">IPTV <span class="text-accent-400">TV OS</span></h1>
+                    <span id="totalMediaCounter" class="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-tv-800 text-slate-300 border border-tv-700">0 mídias</span>
+                </div>
+                <p id="activePlaylistSubtitle" class="text-xs text-slate-400 truncate max-w-[220px] sm:max-w-xs">Nenhuma lista ativa</p>
+            </div>
+        </div>
+
+        <!-- Busca Rápida para TV / Teclado -->
+        <div class="flex-1 max-w-md w-full order-3 lg:order-2">
+            <div class="relative flex items-center">
+                <i class="ph-bold ph-magnifying-glass absolute left-3.5 text-slate-400 text-lg pointer-events-none"></i>
+                <input 
+                    type="text" 
+                    id="searchInput" 
+                    data-tv-zone="header"
+                    placeholder="Buscar canal, filme ou série..." 
+                    class="tv-focusable w-full bg-tv-800 border-2 border-tv-700 rounded-2xl pl-10 pr-10 py-2.5 text-sm text-white placeholder-slate-400"
+                >
+                <button id="clearSearchBtn" data-tv-zone="header" class="tv-focusable hidden absolute right-2.5 p-1 rounded-lg text-slate-400 hover:text-white">
+                    <i class="ph-fill ph-x-circle text-lg"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Controles de Múltiplas Listas & Atalhos -->
+        <div class="flex items-center gap-2.5 order-2 lg:order-3">
+            <!-- Seletor Rápido: Mesclar Todas ou Lista Específica -->
+            <div class="relative">
+                <select 
+                    id="playlistScopeSelect" 
+                    data-tv-zone="header"
+                    class="tv-focusable bg-tv-800 hover:bg-tv-700 border-2 border-tv-700 text-slate-100 text-xs sm:text-sm font-semibold rounded-2xl px-3.5 py-2.5 pr-8 appearance-none cursor-pointer"
+                    title="Alternar entre todas as listas ativas ou uma lista específica"
+                >
+                    <option value="ALL_ACTIVE">Todas as Listas Ativas</option>
+                </select>
+                <i class="ph-bold ph-caret-down absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-xs"></i>
+            </div>
+
+            <!-- Botão Atualizar Lista(s) via URL -->
+            <button 
+                id="refreshPlaylistsBtn" 
+                data-tv-zone="header"
+                class="tv-focusable p-2.5 rounded-2xl bg-tv-800 hover:bg-tv-700 border-2 border-tv-700 text-slate-200 flex items-center justify-center"
+                title="Atualizar listas de URL remota"
+            >
+                <i class="ph-bold ph-arrows-clockwise text-lg"></i>
+            </button>
+
+            <!-- Botão Gerenciador de Listas IPTV -->
+            <button 
+                id="openManagerModalBtn" 
+                data-tv-zone="header"
+                class="tv-focusable px-4 py-2.5 rounded-2xl bg-accent-600 hover:bg-accent-500 border-2 border-accent-400/40 text-white text-xs sm:text-sm font-bold flex items-center gap-2 shadow-lg shadow-accent-600/30"
+            >
+                <i class="ph-bold ph-List-plus text-lg"></i>
+                <span>Minhas Listas</span>
+                <span id="playlistsCountPill" class="px-1.5 py-0.2 bg-black/30 rounded-md text-xs font-mono">0</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- =====================================================================
+         CORPO PRINCIPAL: SIDEBAR CATEGORIAS (ESQUERDA) + GRADE TV (DIREITA)
+         ===================================================================== -->
+    <main class="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
+
+        <!-- 1. SIDEBAR DE GRUPOS E CATEGORIAS -->
+        <aside class="w-full lg:w-72 xl:w-80 bg-tv-900 border-b lg:border-b-0 lg:border-r border-tv-700/70 flex flex-col shrink-0 max-h-44 lg:max-h-full">
+            
+            <!-- Abas Fixas Rápidas (Todos, Favoritos, Recentes) -->
+            <div class="p-3 border-b border-tv-800 grid grid-cols-3 gap-1.5 shrink-0">
+                <button id="tabAllBtn" data-tv-zone="sidebar" class="tv-focusable flex flex-col items-center justify-center py-2 px-2 rounded-xl border-2 border-transparent bg-accent-600 text-white font-semibold text-xs gap-1">
+                    <i class="ph-fill ph-squares-four text-base"></i>
+                    <span>Todos</span>
+                </button>
+                <button id="tabFavBtn" data-tv-zone="sidebar" class="tv-focusable flex flex-col items-center justify-center py-2 px-2 rounded-xl border-2 border-transparent bg-tv-800 text-slate-300 hover:text-white font-semibold text-xs gap-1">
+                    <i class="ph-fill ph-star text-amber-400 text-base"></i>
+                    <span>Favoritos</span>
+                </button>
+                <button id="tabHistoryBtn" data-tv-zone="sidebar" class="tv-focusable flex flex-col items-center justify-center py-2 px-2 rounded-xl border-2 border-transparent bg-tv-800 text-slate-300 hover:text-white font-semibold text-xs gap-1">
+                    <i class="ph-fill ph-clock-counter-clockwise text-sky-400 text-base"></i>
+                    <span>Recentes</span>
+                </button>
+            </div>
+
+            <!-- Filtro de Categorias -->
+            <div class="px-3 py-2 border-b border-tv-800 hidden lg:flex items-center justify-between gap-2">
+                <div class="relative flex-1">
+                    <i class="ph ph-funnel absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+                    <input 
+                        type="text" 
+                        id="categorySearchInput" 
+                        data-tv-zone="sidebar"
+                        placeholder="Filtrar categorias..." 
+                        class="tv-focusable w-full bg-tv-800 border border-tv-700 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500"
+                    >
+                </div>
+                <span id="categoryTotalBadge" class="text-[11px] font-mono text-slate-400 bg-tv-800 px-2 py-1 rounded-lg">0</span>
+            </div>
+
+            <!-- Lista Rolável de Categorias -->
+            <div id="categoryListContainer" class="flex lg:flex-col overflow-x-auto lg:overflow-y-auto p-2.5 gap-1.5 flex-1">
+                <!-- Preenchido via JS -->
+            </div>
+        </aside>
+
+        <!-- 2. ÁREA PRINCIPAL DE CONTEÚDO (GRADE DE CANAIS / MÍDIAS PAGINADA PARA TV) -->
+        <section class="flex-1 flex flex-col bg-tv-950 overflow-hidden">
+            
+            <!-- Sub-Header da Grade: Categoria Atual + Controles de Exibição e Paginação -->
+            <div class="px-4 lg:px-6 py-3 bg-tv-900/60 border-b border-tv-800 flex flex-wrap items-center justify-between gap-3 shrink-0">
+                <div class="flex items-center gap-3 min-w-0">
+                    <h2 id="currentCategoryHeading" class="text-base sm:text-lg font-extrabold text-white truncate">Todos os Conteúdos</h2>
+                    <span id="filteredItemsBadge" class="px-2.5 py-0.5 rounded-full text-xs font-mono font-semibold bg-accent-500/20 text-accent-400 border border-accent-500/30">0</span>
+                </div>
+
+                <!-- Controles de Layout e Lote por Página -->
+                <div class="flex items-center gap-2">
+                    <span class="hidden md:inline text-xs text-slate-400 mr-1">
+                        <kbd class="px-1.5 py-0.5 bg-tv-800 border border-tv-700 rounded text-[11px]">Setas</kbd> Navegar • 
+                        <kbd class="px-1.5 py-0.5 bg-tv-800 border border-tv-700 rounded text-[11px]">Enter</kbd> Assistir em Tela Cheia
+                    </span>
+
+                    <select 
+                        id="pageSizeSelect" 
+                        data-tv-zone="toolbar"
+                        class="tv-focusable bg-tv-800 border-2 border-tv-700 text-slate-200 text-xs font-semibold rounded-xl px-2.5 py-1.5 cursor-pointer"
+                        title="Quantidade de mídias por página"
+                    >
+                        <option value="24">24 por pág.</option>
+                        <option value="36" selected>36 por pág.</option>
+                        <option value="48">48 por pág.</option>
+                        <option value="72">72 por pág.</option>
+                    </select>
+
+                    <button id="layoutGridBtn" data-tv-zone="toolbar" class="tv-focusable p-2 rounded-xl bg-accent-600 text-white border-2 border-transparent" title="Modo Grade TV">
+                        <i class="ph-bold ph-squares-four text-base"></i>
+                    </button>
+                    <button id="layoutListBtn" data-tv-zone="toolbar" class="tv-focusable p-2 rounded-xl bg-tv-800 text-slate-400 hover:text-white border-2 border-transparent" title="Modo Lista Detalhada">
+                        <i class="ph-bold ph-list-dashes text-base"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Grade Principal de Canais/Mídias (ou Estado Vazio se não houver lista) -->
+            <div id="mediaGridWrapper" class="flex-1 overflow-y-auto p-4 lg:p-6">
+                
+                <!-- Estado Vazio (Exibido quando o usuário ainda não cadastrou nenhuma lista) -->
+                <div id="emptyPlaylistState" class="hidden h-full flex flex-col items-center justify-center text-center max-w-lg mx-auto p-6">
+                    <div class="w-20 h-20 rounded-3xl bg-tv-800 border-2 border-tv-700 flex items-center justify-center text-accent-400 mb-5 shadow-2xl">
+                        <i class="ph-duotone ph-television text-5xl"></i>
+                    </div>
+                    <h3 class="text-xl sm:text-2xl font-extrabold text-white mb-2">Nenhuma Lista IPTV Carregada</h3>
+                    <p class="text-sm text-slate-400 mb-6 leading-relaxed">
+                        Este leitor é dedicado exclusivamente às suas listas <code class="text-accent-400 bg-tv-800 px-1.5 py-0.5 rounded">.m3u</code> e <code class="text-accent-400 bg-tv-800 px-1.5 py-0.5 rounded">.m3u8</code>. Adicione quantas listas desejar via URL, arquivo local ou texto.
+                    </p>
+                    <button 
+                        onclick="openPlaylistManagerModal()" 
+                        data-tv-zone="grid"
+                        class="tv-focusable px-6 py-3.5 rounded-2xl bg-accent-600 hover:bg-accent-500 border-2 border-accent-400/50 text-white font-bold text-sm flex items-center gap-2.5 shadow-xl shadow-accent-600/30"
+                    >
+                        <i class="ph-bold ph-plus-circle text-xl"></i>
+                        <span>Adicionar Minha Primeira Lista IPTV</span>
+                    </button>
+                </div>
+
+                <!-- Container Dinâmico dos Cards -->
+                <div id="mediaGridContainer" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-3.5">
+                    <!-- Renderizado via JS (apenas a página atual) -->
+                </div>
+            </div>
+
+            <!-- Barra Inferior de Paginação Rápida para TV -->
+            <footer class="px-4 lg:px-6 py-3 bg-tv-900 border-t border-tv-700/80 flex items-center justify-between gap-4 shrink-0">
+                <button 
+                    id="prevPageBtn" 
+                    data-tv-zone="pagination"
+                    disabled
+                    class="tv-focusable px-4 py-2 rounded-xl bg-tv-800 hover:bg-tv-700 disabled:opacity-35 disabled:pointer-events-none border-2 border-tv-700 text-xs sm:text-sm font-bold text-white flex items-center gap-2"
+                >
+                    <i class="ph-bold ph-caret-left text-base"></i>
+                    <span>Página Anterior <span class="hidden sm:inline text-[11px] text-slate-400 font-normal">(PgUp)</span></span>
+                </button>
+
+                <div class="flex items-center gap-2 text-xs sm:text-sm text-slate-300">
+                    <span>Página</span>
+                    <input 
+                        type="number" 
+                        id="pageNumberInput" 
+                        data-tv-zone="pagination"
+                        min="1" 
+                        value="1" 
+                        class="tv-focusable w-16 bg-tv-800 border-2 border-tv-700 rounded-xl py-1.5 text-center text-white font-extrabold"
+                    >
+                    <span>de <strong id="totalPagesText" class="text-white font-extrabold">1</strong></span>
+                </div>
+
+                <button 
+                    id="nextPageBtn" 
+                    data-tv-zone="pagination"
+                    disabled
+                    class="tv-focusable px-4 py-2 rounded-xl bg-tv-800 hover:bg-tv-700 disabled:opacity-35 disabled:pointer-events-none border-2 border-tv-700 text-xs sm:text-sm font-bold text-white flex items-center gap-2"
+                >
+                    <span>Próxima Página <span class="hidden sm:inline text-[11px] text-slate-400 font-normal">(PgDn)</span></span>
+                    <i class="ph-bold ph-caret-right text-base"></i>
+                </button>
+            </footer>
+        </section>
+    </main>
+
+    <!-- =====================================================================
+         PLAYER EM TELA CHEIA (FULLSCREEN TV OVERLAY + OSD INTELIGENTE)
+         Abre em 100vw/100vh e aciona a Fullscreen API ao selecionar um canal
+         ===================================================================== -->
+    <div id="fullscreenPlayerOverlay" class="hidden fixed inset-0 w-screen h-screen bg-black z-50 flex items-center justify-center overflow-hidden">
+        
+        <!-- Elemento de Vídeo ocupando 100% da tela -->
+        <video id="tvVideoPlayer" class="w-full h-full object-contain bg-black" playsinline></video>
+
+        <!-- Spinner de Carregamento / Buffering no Centro da TV -->
+        <div id="playerBufferingIndicator" class="hidden absolute inset-0 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm z-20 pointer-events-none">
+            <div class="w-16 h-16 border-4 border-accent-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+            <p id="bufferingChannelTitle" class="text-base sm:text-lg font-bold text-white tracking-wide">Conectando ao canal...</p>
+            <span class="text-xs text-slate-400 mt-1">Aguardando resposta do servidor de mídia</span>
+        </div>
+
+        <!-- Tela de Erro de Stream na TV (Permite tentar reconectar ou pular de canal pelo controle) -->
+        <div id="playerErrorScreen" class="hidden absolute inset-0 flex flex-col items-center justify-center bg-tv-950/95 p-8 text-center z-30">
+            <div class="w-20 h-20 rounded-3xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-500 mb-4">
+                <i class="ph-duotone ph-warning-octagon text-5xl"></i>
+            </div>
+            <h3 class="text-xl sm:text-2xl font-extrabold text-white mb-2">Sinal Indisponível no Momento</h3>
+            <p id="playerErrorDetails" class="text-sm text-slate-400 max-w-lg mb-6">
+                O stream pode estar temporariamente offline, bloqueado por CORS/HTTP ou em formato não suportado pelo navegador.
+            </p>
+            <div class="flex flex-wrap items-center justify-center gap-3">
+                <button id="errorRetryBtn" data-tv-zone="player-error" class="tv-focusable px-5 py-3 rounded-2xl bg-accent-600 hover:bg-accent-500 text-white font-bold text-sm flex items-center gap-2 border-2 border-transparent">
+                    <i class="ph-bold ph-arrow-clockwise text-lg"></i> Tentar Reconectar
+                </button>
+                <button id="errorNextChannelBtn" data-tv-zone="player-error" class="tv-focusable px-5 py-3 rounded-2xl bg-tv-800 hover:bg-tv-700 text-slate-100 font-bold text-sm flex items-center gap-2 border-2 border-tv-700">
+                    <i class="ph-bold ph-skip-forward text-lg"></i> Próximo Canal
+                </button>
+                <button id="errorCopyUrlBtn" data-tv-zone="player-error" class="tv-focusable px-5 py-3 rounded-2xl bg-tv-800 hover:bg-tv-700 text-slate-200 font-bold text-sm flex items-center gap-2 border-2 border-tv-700">
+                    <i class="ph-bold ph-copy text-lg"></i> Copiar URL (VLC)
+                </button>
+                <button id="errorExitBtn" data-tv-zone="player-error" class="tv-focusable px-5 py-3 rounded-2xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 font-bold text-sm flex items-center gap-2 border-2 border-rose-500/30">
+                    <i class="ph-bold ph-arrow-left text-lg"></i> Voltar à Grade
+                </button>
+            </div>
+        </div>
+
+        <!-- =================================================================
+             OSD (ON-SCREEN DISPLAY) DA TV - SOME APÓS 4s DE INATIVIDADE
+             ================================================================= -->
+        <div id="playerOsdContainer" class="osd-fade absolute inset-0 flex flex-col justify-between p-5 sm:p-8 bg-gradient-to-b from-black/80 via-transparent to-black/90 z-20">
+            
+            <!-- Topo do OSD: Botão Voltar + Lista de Origem + Relógio da TV -->
+            <div class="osd-top flex items-center justify-between gap-4 transition-transform duration-300">
+                <div class="flex items-center gap-3">
+                    <button 
+                        id="osdClosePlayerBtn" 
+                        data-tv-zone="osd"
+                        class="tv-focusable px-4 py-2.5 rounded-2xl bg-tv-900/90 hover:bg-tv-800 border-2 border-tv-700 text-white font-bold text-xs sm:text-sm flex items-center gap-2 backdrop-blur-md"
+                    >
+                        <i class="ph-bold ph-arrow-left text-lg"></i>
+                        <span>Voltar à Grade <span class="hidden sm:inline text-slate-400 font-normal">(Esc / Back)</span></span>
+                    </button>
+
+                    <button 
+                        id="osdToggleMiniGuideBtn" 
+                        data-tv-zone="osd"
+                        class="tv-focusable px-4 py-2.5 rounded-2xl bg-accent-600/90 hover:bg-accent-500 border-2 border-accent-400/40 text-white font-bold text-xs sm:text-sm flex items-center gap-2 backdrop-blur-md"
+                    >
+                        <i class="ph-bold ph-list-bullets text-lg"></i>
+                        <span>Guia Rápido de Canais</span>
+                    </button>
+                </div>
+
+                <!-- Relógio e Badge da Lista -->
+                <div class="flex items-center gap-3 bg-tv-900/85 border border-tv-700/80 px-4 py-2 rounded-2xl backdrop-blur-md">
+                    <span id="osdPlaylistNameBadge" class="text-xs font-semibold text-accent-400">Lista Principal</span>
+                    <span class="text-tv-600">•</span>
+                    <span id="osdClock" class="text-sm font-mono font-bold text-white">--:--</span>
+                </div>
+            </div>
+
+            <!-- Rodapé do OSD: Info do Canal + Barra de Progresso (VOD) + Controles de TV -->
+            <div class="osd-bottom max-w-6xl w-full mx-auto bg-tv-900/90 border border-tv-700/80 rounded-3xl p-4 sm:p-6 backdrop-blur-xl shadow-2xl transition-transform duration-300">
+                
+                <!-- Barra de Tempo para VOD (Filmes/Séries) -->
+                <div id="osdVodSeekWrapper" class="hidden mb-4">
+                    <div class="flex items-center justify-between text-xs font-mono text-slate-300 mb-1.5">
+                        <span id="osdCurrentTime">00:00</span>
+                        <span id="osdDurationTime">00:00</span>
+                    </div>
+                    <input 
+                        type="range" 
+                        id="osdSeekInput" 
+                        data-tv-zone="osd"
+                        min="0" 
+                        max="100" 
+                        value="0" 
+                        class="tv-focusable w-full accent-indigo-500 h-2 bg-tv-700 rounded-lg cursor-pointer"
+                    >
+                </div>
+
+                <div class="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+                    
+                    <!-- Número do Canal + Logo + Nome + Categoria -->
+                    <div class="flex items-center gap-4 min-w-0 flex-1">
+                        <div class="px-3.5 py-2.5 rounded-2xl bg-accent-600/20 border border-accent-500/40 text-accent-400 font-mono font-extrabold text-lg sm:text-2xl shrink-0" id="osdChannelNumber">
+                            #001
+                        </div>
+                        <div class="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-tv-950 border border-tv-700 p-1.5 flex items-center justify-center shrink-0 overflow-hidden">
+                            <img id="osdChannelLogo" src="" alt="Logo" class="max-w-full max-h-full object-contain">
+                        </div>
+                        <div class="min-w-0 flex-1">
+                            <div class="flex flex-wrap items-center gap-2 mb-1">
+                                <span id="osdStreamTypeBadge" class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[11px] font-extrabold uppercase tracking-wider">
+                                    <span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span> AO VIVO
+                                </span>
+                                <span id="osdChannelCategory" class="text-xs sm:text-sm font-semibold text-accent-400 truncate">Categoria</span>
+                            </div>
+                            <h2 id="osdChannelTitle" class="text-lg sm:text-2xl font-extrabold text-white truncate">Nome do Canal</h2>
+                        </div>
+                    </div>
+
+                    <!-- Botões Grandes de Controle do Player TV -->
+                    <div class="flex flex-wrap items-center gap-2 sm:gap-2.5 w-full lg:w-auto justify-end">
+                        
+                        <!-- Canal Anterior (Seta Cima / Ch-) -->
+                        <button 
+                            id="osdPrevChannelBtn" 
+                            data-tv-zone="osd"
+                            class="tv-focusable px-3.5 py-3 rounded-2xl bg-tv-800 hover:bg-tv-700 border-2 border-tv-700 text-white flex items-center gap-1.5 text-xs sm:text-sm font-bold"
+                            title="Canal Anterior (Seta para Cima)"
+                        >
+                            <i class="ph-bold ph-caret-up text-lg text-accent-400"></i>
+                            <span>CH -</span>
+                        </button>
+
+                        <!-- Play / Pause -->
+                        <button 
+                            id="osdPlayPauseBtn" 
+                            data-tv-zone="osd"
+                            class="tv-focusable p-3.5 rounded-2xl bg-accent-600 hover:bg-accent-500 border-2 border-accent-400/50 text-white flex items-center justify-center"
+                            title="Reproduzir / Pausar"
+                        >
+                            <i id="osdPlayPauseIcon" class="ph-fill ph-pause text-xl"></i>
+                        </button>
+
+                        <!-- Próximo Canal (Seta Baixo / Ch+) -->
+                        <button 
+                            id="osdNextChannelBtn" 
+                            data-tv-zone="osd"
+                            class="tv-focusable px-3.5 py-3 rounded-2xl bg-tv-800 hover:bg-tv-700 border-2 border-tv-700 text-white flex items-center gap-1.5 text-xs sm:text-sm font-bold"
+                            title="Próximo Canal (Seta para Baixo)"
+                        >
+                            <span>CH +</span>
+                            <i class="ph-bold ph-caret-down text-lg text-accent-400"></i>
+                        </button>
+
+                        <!-- Volume / Mute -->
+                        <button 
+                            id="osdMuteBtn" 
+                            data-tv-zone="osd"
+                            class="tv-focusable p-3 rounded-2xl bg-tv-800 hover:bg-tv-700 border-2 border-tv-700 text-slate-200"
+                            title="Mudo / Som"
+                        >
+                            <i id="osdVolumeIcon" class="ph-fill ph-speaker-high text-lg"></i>
+                        </button>
+
+                        <!-- Seletor de Qualidade HLS (Exibido quando o stream possui múltiplos níveis) -->
+                        <select 
+                            id="osdQualitySelect" 
+                            data-tv-zone="osd"
+                            class="tv-focusable hidden bg-tv-800 border-2 border-tv-700 text-white text-xs font-bold rounded-2xl px-3 py-3 cursor-pointer"
+                            title="Qualidade de Vídeo"
+                        >
+                            <option value="-1">Auto HD</option>
+                        </select>
+
+                        <!-- Favoritar -->
+                        <button 
+                            id="osdFavBtn" 
+                            data-tv-zone="osd"
+                            class="tv-focusable p-3 rounded-2xl bg-tv-800 hover:bg-tv-700 border-2 border-tv-700 text-slate-300"
+                            title="Adicionar/Remover dos Favoritos"
+                        >
+                            <i id="osdFavIcon" class="ph ph-star text-lg"></i>
+                        </button>
+
+                        <!-- Alternar Tela Cheia Nativa (Fullscreen API) -->
+                        <button 
+                            id="osdNativeFullscreenBtn" 
+                            data-tv-zone="osd"
+                            class="tv-focusable p-3 rounded-2xl bg-tv-800 hover:bg-tv-700 border-2 border-tv-700 text-slate-200"
+                            title="Alternar Fullscreen do Sistema"
+                        >
+                            <i class="ph-bold ph-corners-out text-lg"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- =================================================================
+             MINI-GUIA LATERAL DE CANAIS (SOBREPOSTO AO VÍDEO EM TELA CHEIA)
+             Permite trocar de canal sem interromper a reprodução atual
+             ================================================================= -->
+        <aside id="playerMiniGuideDrawer" class="hidden absolute top-0 left-0 bottom-0 w-80 sm:w-96 bg-tv-900/95 backdrop-blur-2xl border-r border-tv-700 z-30 flex flex-col shadow-2xl">
+            <div class="p-4 border-b border-tv-700 flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                    <i class="ph-fill ph-television text-accent-400 text-xl"></i>
+                    <h3 class="font-extrabold text-sm sm:text-base text-white">Troca Rápida de Canal</h3>
+                </div>
+                <button id="closeMiniGuideBtn" data-tv-zone="miniguide" class="tv-focusable p-2 rounded-xl bg-tv-800 text-slate-300 hover:text-white border-2 border-transparent">
+                    <i class="ph-bold ph-x text-base"></i>
+                </button>
+            </div>
+
+            <div class="p-3 border-b border-tv-800">
+                <input 
+                    type="text" 
+                    id="miniGuideSearchInput" 
+                    data-tv-zone="miniguide"
+                    placeholder="Buscar no guia rápido..." 
+                    class="tv-focusable w-full bg-tv-800 border-2 border-tv-700 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-400"
+                >
+            </div>
+
+            <div id="miniGuideListContainer" class="flex-1 overflow-y-auto p-3 space-y-1.5">
+                <!-- Preenchido dinamicamente com a vizinhança de canais ou filtro -->
+            </div>
+        </aside>
+    </div>
+
+    <!-- =====================================================================
+         MODAL GERENCIADOR DE MÚLTIPLAS LISTAS IPTV (INDEXEDDB)
+         Permite adicionar via URL, Arquivo Local ou Texto M3U, ativar/desativar,
+         renomear, atualizar ou excluir listas.
+         ===================================================================== -->
+    <div id="playlistManagerModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-md z-40 flex items-center justify-center p-4 overflow-y-auto">
+        <div class="bg-tv-900 border-2 border-tv-700 rounded-3xl max-w-4xl w-full overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+            
+            <!-- Cabeçalho do Modal -->
+            <div class="px-6 py-4 bg-tv-950/60 border-b border-tv-700 flex items-center justify-between gap-4 shrink-0">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl bg-accent-600/20 border border-accent-500/40 flex items-center justify-center text-accent-400">
+                        <i class="ph-fill ph-stack text-2xl"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-base sm:text-lg font-extrabold text-white">Gerenciador de Listas IPTV</h2>
+                        <p class="text-xs text-slate-400">Adicione múltiplas listas (.m3u / .m3u8). Os dados ficam salvos no banco local do seu navegador.</p>
+                    </div>
+                </div>
+                <button id="closeManagerModalBtn" data-tv-zone="modal" class="tv-focusable p-2 rounded-xl bg-tv-800 hover:bg-tv-700 text-slate-300 hover:text-white border-2 border-transparent">
+                    <i class="ph-bold ph-x text-lg"></i>
+                </button>
+            </div>
+
+            <!-- Conteúdo Dividido: Listas Salvas (Esquerda) + Adicionar Nova Lista (Direita) -->
+            <div class="flex-1 overflow-y-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+                
+                <!-- COLUNA 1: Minhas Listas Cadastradas (7 colunas) -->
+                <div class="lg:col-span-7 flex flex-col">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-xs font-extrabold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                            <i class="ph-fill ph-list-checks text-accent-400 text-base"></i>
+                            Listas Cadastradas
+                        </h3>
+                        <button id="clearAllPlaylistsBtn" data-tv-zone="modal" class="tv-focusable text-xs text-rose-400 hover:text-rose-300 font-semibold px-2 py-1 rounded-lg">
+                            Remover Todas
+                        </button>
+                    </div>
+
+                    <div id="savedPlaylistsContainer" class="flex-1 space-y-2.5 overflow-y-auto max-h-96 pr-1">
+                        <!-- Preenchido via JS -->
+                    </div>
+                </div>
+
+                <!-- COLUNA 2: Adicionar Nova Lista IPTV (5 colunas) -->
+                <div class="lg:col-span-5 bg-tv-950/70 border border-tv-800 rounded-2xl p-4 flex flex-col justify-between space-y-4">
+                    <div>
+                        <h3 class="text-xs font-extrabold uppercase tracking-wider text-accent-400 mb-3 flex items-center gap-1.5">
+                            <i class="ph-bold ph-plus-circle text-base"></i> Nova Lista IPTV
+                        </h3>
+
+                        <!-- Nome da Lista -->
+                        <div class="mb-3">
+                            <label class="block text-xs font-semibold text-slate-300 mb-1">Nome Identificador da Lista</label>
+                            <input 
+                                type="text" 
+                                id="newPlaylistNameInput" 
+                                data-tv-zone="modal"
+                                placeholder="Ex: TV Principal, Filmes VOD, Esportes..." 
+                                class="tv-focusable w-full bg-tv-800 border-2 border-tv-700 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-white placeholder-slate-500"
+                            >
+                        </div>
+
+                        <!-- Abas de Método de Entrada: URL | Arquivo Local | Colar Texto -->
+                        <div class="grid grid-cols-3 gap-1.5 p-1 bg-tv-900 rounded-xl border border-tv-800 mb-3">
+                            <button type="button" id="methodTabUrl" data-tv-zone="modal" class="tv-focusable py-1.5 rounded-lg text-xs font-bold bg-accent-600 text-white">Via URL</button>
+                            <button type="button" id="methodTabFile" data-tv-zone="modal" class="tv-focusable py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-white">Arquivo</button>
+                            <button type="button" id="methodTabRaw" data-tv-zone="modal" class="tv-focusable py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-white">Texto M3U</button>
+                        </div>
+
+                        <!-- Painel 1: Via URL -->
+                        <div id="panelInputUrl" class="space-y-3">
+                            <div>
+                                <label class="block text-xs font-semibold text-slate-300 mb-1">URL da Lista (.m3u / .m3u8)</label>
+                                <input 
+                                    type="url" 
+                                    id="newPlaylistUrlInput" 
+                                    data-tv-zone="modal"
+                                    placeholder="https://servidor.com/get.php?username=..." 
+                                    class="tv-focusable w-full bg-tv-800 border-2 border-tv-700 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-white placeholder-slate-500"
+                                >
+                            </div>
+                            <button 
+                                id="submitUrlPlaylistBtn" 
+                                data-tv-zone="modal"
+                                class="tv-focusable w-full py-2.5 rounded-xl bg-accent-600 hover:bg-accent-500 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-accent-600/25 border-2 border-transparent"
+                            >
+                                <i class="ph-bold ph-cloud-arrow-down text-lg"></i>
+                                <span>Baixar e Salvar Lista</span>
+                            </button>
+                        </div>
+
+                        <!-- Painel 2: Via Upload de Arquivo Local -->
+                        <div id="panelInputFile" class="hidden space-y-3">
+                            <label for="newPlaylistFileInput" data-tv-zone="modal" tabindex="0" class="tv-focusable flex flex-col items-center justify-center border-2 border-dashed border-tv-700 hover:border-accent-500 bg-tv-800/50 rounded-2xl p-5 cursor-pointer text-center">
+                                <i class="ph-duotone ph-file-arrow-up text-3xl text-accent-400 mb-1.5"></i>
+                                <span class="text-xs font-bold text-white">Selecionar arquivo .M3U ou .M3U8</span>
+                                <span class="text-[11px] text-slate-400 mt-0.5">Suporta listas gigantes (+100.000 canais)</span>
+                                <input type="file" id="newPlaylistFileInput" accept=".m3u,.m3u8,.txt" class="hidden">
+                            </label>
+                        </div>
+
+                        <!-- Painel 3: Via Colar Código M3U -->
+                        <div id="panelInputRaw" class="hidden space-y-3">
+                            <textarea 
+                                id="newPlaylistRawInput" 
+                                data-tv-zone="modal"
+                                rows="4" 
+                                placeholder="#EXTM3U&#10;#EXTINF:-1 group-title=&quot;Canais&quot;,Meu Canal&#10;https://..." 
+                                class="tv-focusable w-full bg-tv-800 border-2 border-tv-700 rounded-xl p-3 text-xs text-white font-mono placeholder-slate-500"
+                            ></textarea>
+                            <button 
+                                id="submitRawPlaylistBtn" 
+                                data-tv-zone="modal"
+                                class="tv-focusable w-full py-2.5 rounded-xl bg-accent-600 hover:bg-accent-500 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 border-2 border-transparent"
+                            >
+                                <i class="ph-bold ph-check-circle text-lg"></i>
+                                <span>Importar Texto M3U</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Barra de Progresso do Processamento Assíncrono -->
+                    <div id="importProgressContainer" class="hidden bg-tv-900 border border-tv-700 rounded-xl p-3">
+                        <div class="flex items-center justify-between text-xs mb-1.5">
+                            <span id="importProgressLabel" class="text-slate-200 font-semibold truncate">Processando lista...</span>
+                            <span id="importProgressPct" class="text-accent-400 font-mono font-bold">0%</span>
+                        </div>
+                        <div class="w-full h-2 bg-tv-950 rounded-full overflow-hidden">
+                            <div id="importProgressBar" class="h-full bg-accent-500 transition-all duration-150" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- TOAST DE NOTIFICAÇÃO TV (Sem uso de alert/confirm) -->
+    <div id="tvToast" class="fixed bottom-6 right-6 z-50 transform translate-y-24 opacity-0 pointer-events-none transition-all duration-300 bg-tv-800 border-2 border-tv-600 text-white px-5 py-3.5 rounded-2xl shadow-2xl flex items-center gap-3 max-w-md">
+        <i id="tvToastIcon" class="ph-fill ph-check-circle text-emerald-400 text-2xl shrink-0"></i>
+        <span id="tvToastText" class="text-xs sm:text-sm font-semibold text-slate-100">Ação concluída</span>
+    </div>
+
+    <!-- =====================================================================
+         LÓGICA DA APLICAÇÃO: INDEXEDDB, PARSER CHUNKED, PLAYER FULLSCREEN & TV NAV
+         ===================================================================== -->
+    <script>
+        /**
+         * 1. PERSISTÊNCIA DE MÚLTIPLAS LISTAS NO INDEXEDDB
+         * Permite salvar várias listas grandes sem o limite de 5MB do localStorage.
+         */
+        const DB_NAME = 'SmartTV_IPTV_Database_v2';
+        const DB_VERSION = 1;
+        const STORE_PLAYLISTS = 'playlists';
+
+        function openDatabase() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(DB_NAME, DB_VERSION);
+                req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains(STORE_PLAYLISTS)) {
+                        db.createObjectStore(STORE_PLAYLISTS, { keyPath: 'id' });
+                    }
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function dbGetAllPlaylists() {
+            try {
+                const db = await openDatabase();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(STORE_PLAYLISTS, 'readonly');
+                    const store = tx.objectStore(STORE_PLAYLISTS);
+                    const req = store.getAll();
+                    req.onsuccess = () => resolve(req.result || []);
+                    req.onerror = () => reject(req.error);
+                });
+            } catch (err) {
+                console.warn('Erro ao ler IndexedDB:', err);
+                return [];
+            }
+        }
+
+        async function dbSavePlaylist(playlistObj) {
+            const db = await openDatabase();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_PLAYLISTS, 'readwrite');
+                const store = tx.objectStore(STORE_PLAYLISTS);
+                store.put(playlistObj);
+                tx.oncomplete = () => resolve(true);
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function dbDeletePlaylist(id) {
+            const db = await openDatabase();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_PLAYLISTS, 'readwrite');
+                const store = tx.objectStore(STORE_PLAYLISTS);
+                store.delete(id);
+                tx.oncomplete = () => resolve(true);
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function dbClearAllPlaylists() {
+            const db = await openDatabase();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_PLAYLISTS, 'readwrite');
+                const store = tx.objectStore(STORE_PLAYLISTS);
+                store.clear();
+                tx.oncomplete = () => resolve(true);
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        /**
+         * 2. ESTADO GLOBAL DA CENTRAL IPTV
+         */
+        const state = {
+            playlists: [],               // Lista de objetos { id, name, sourceType, url, enabled, updatedAt, channels: [] }
+            selectedScope: 'ALL_ACTIVE', // 'ALL_ACTIVE' ou ID de uma lista específica
+            mergedChannels: [],          // Todos os canais das listas ativas mesclados em memória
+            filteredChannels: [],        // Canais filtrados pela categoria + busca atual
+            categories: new Map(),       // group-title -> contagem
+            favorites: new Set(),        // URLs favoritadas
+            history: [],                 // Últimos canais assistidos (array de objetos resumidos)
+            activeTab: 'ALL',            // 'ALL', 'FAV', 'HISTORY' ou nome da categoria
+            searchQuery: '',
+            categorySearchQuery: '',
+            currentPage: 1,
+            itemsPerPage: 36,
+            layoutMode: 'grid',          // 'grid' ou 'list'
+            // Estado do Player Fullscreen
+            isPlayerOpen: false,
+            isMiniGuideOpen: false,
+            currentChannelIndex: -1,     // Índice dentro de state.filteredChannels (ou mergedChannels)
+            currentPlayingChannel: null,
+            hls: null,
+            osdTimer: null
+        };
+
+        // Carrega Favoritos e Histórico do localStorage
+        try {
+            const favs = JSON.parse(localStorage.getItem('tv_iptv_favs_v2') || '[]');
+            favs.forEach(u => state.favorites.add(u));
+            state.history = JSON.parse(localStorage.getItem('tv_iptv_history_v2') || '[]');
+        } catch (e) {}
+
+        function saveFavoritesToStorage() {
+            try {
+                localStorage.setItem('tv_iptv_favs_v2', JSON.stringify(Array.from(state.favorites)));
+            } catch (e) {}
+        }
+
+        function addChannelToHistory(channel) {
+            if (!channel) return;
+            state.history = state.history.filter(item => item.url !== channel.url);
+            state.history.unshift({
+                globalNumber: channel.globalNumber,
+                name: channel.name,
+                nameLower: channel.name.toLowerCase(),
+                group: channel.group,
+                groupLower: channel.group.toLowerCase(),
+                logo: channel.logo,
+                url: channel.url,
+                playlistId: channel.playlistId,
+                playlistName: channel.playlistName
+            });
+            if (state.history.length > 100) state.history.pop();
+            try {
+                localStorage.setItem('tv_iptv_history_v2', JSON.stringify(state.history));
+            } catch (e) {}
+        }
+
+        /**
+         * 3. NOTIFICAÇÕES TOAST (Sem alert/confirm)
+         */
+        let toastTimeoutId = null;
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('tvToast');
+            const icon = document.getElementById('tvToastIcon');
+            const text = document.getElementById('tvToastText');
+
+            text.textContent = message;
+            icon.className = 'text-2xl shrink-0 ';
+            if (type === 'error') {
+                icon.classList.add('ph-fill', 'ph-warning-octagon', 'text-rose-400');
+            } else if (type === 'info') {
+                icon.classList.add('ph-fill', 'ph-info', 'text-accent-400');
+            } else {
+                icon.classList.add('ph-fill', 'ph-check-circle', 'text-emerald-400');
+            }
+
+            toast.classList.remove('translate-y-24', 'opacity-0');
+            clearTimeout(toastTimeoutId);
+            toastTimeoutId = setTimeout(() => {
+                toast.classList.add('translate-y-24', 'opacity-0');
+            }, 3500);
+        }
+
+        function escapeHtml(str) {
+            return String(str || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        /**
+         * 4. PARSER M3U ASSÍNCRONO EM LOTES (CHUNKS) PARA LISTAS GIGANTES
+         * Retorna um array de canais enxutos sem congelar a thread principal.
+         */
+        async function parseM3UChunked(rawText, playlistName, playlistId, onProgress) {
+            const lines = rawText.split(/\r?\n/);
+            const totalLines = lines.length;
+            const channels = [];
+
+            let currentExtInf = null;
+            const logoRegex = /tvg-logo="([^"]*)"/i;
+            const groupRegex = /group-title="([^"]*)"/i;
+            const nameRegex = /tvg-name="([^"]*)"/i;
+
+            const CHUNK_SIZE = 14000;
+
+            for (let i = 0; i < totalLines; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+
+                if (line.startsWith('#EXTINF:')) {
+                    const logoMatch = line.match(logoRegex);
+                    const groupMatch = line.match(groupRegex);
+                    const nameMatch = line.match(nameRegex);
+
+                    const commaIdx = line.lastIndexOf(',');
+                    let title = commaIdx !== -1 ? line.slice(commaIdx + 1).trim() : '';
+                    if (!title && nameMatch) title = nameMatch[1].trim();
+
+                    currentExtInf = {
+                        name: title || 'Canal Sem Nome',
+                        logo: logoMatch && logoMatch[1] ? logoMatch[1].trim() : '',
+                        group: groupMatch && groupMatch[1] ? groupMatch[1].trim() : 'Sem Categoria'
+                    };
+                } else if (!line.startsWith('#')) {
+                    const url = line;
+                    const name = currentExtInf ? currentExtInf.name : `Mídia #${channels.length + 1}`;
+                    const group = currentExtInf ? (currentExtInf.group || 'Geral') : 'Geral';
+                    const logo = currentExtInf ? currentExtInf.logo : '';
+
+                    channels.push({
+                        name,
+                        nameLower: name.toLowerCase(),
+                        group,
+                        groupLower: group.toLowerCase(),
+                        logo,
+                        url,
+                        playlistId,
+                        playlistName
+                    });
+                    currentExtInf = null;
+                }
+
+                if (i > 0 && i % CHUNK_SIZE === 0) {
+                    const pct = Math.min(98, Math.round((i / totalLines) * 100));
+                    if (onProgress) onProgress(pct, channels.length);
+                    await new Promise(r => setTimeout(r, 1));
+                }
+            }
+
+            if (onProgress) onProgress(100, channels.length);
+            return channels;
+        }
+
+        /**
+         * 5. CONSOLIDAÇÃO DAS LISTAS ATIVAS E RECONSTRUÇÃO DE ÍNDICES
+         */
+        function rebuildMergedChannels() {
+            const merged = [];
+            const catMap = new Map();
+
+            const activePlaylists = state.playlists.filter(p => {
+                if (!p.enabled) return false;
+                if (state.selectedScope !== 'ALL_ACTIVE' && p.id !== state.selectedScope) return false;
+                return true;
+            });
+
+            let counter = 1;
+            for (const pl of activePlaylists) {
+                const chList = pl.channels || [];
+                for (let i = 0; i < chList.length; i++) {
+                    const ch = chList[i];
+                    const item = {
+                        globalNumber: counter++,
+                        name: ch.name,
+                        nameLower: ch.nameLower || ch.name.toLowerCase(),
+                        group: ch.group || 'Geral',
+                        groupLower: ch.groupLower || (ch.group || 'Geral').toLowerCase(),
+                        logo: ch.logo || '',
+                        url: ch.url,
+                        playlistId: pl.id,
+                        playlistName: pl.name
+                    };
+                    merged.push(item);
+                    catMap.set(item.group, (catMap.get(item.group) || 0) + 1);
+                }
+            }
+
+            state.mergedChannels = merged;
+            state.categories = catMap;
+
+            // Atualiza cabeçalho e seletor de listas
+            updateHeaderStatsAndSelect();
+            renderSidebarCategories();
+            applyFiltersAndRenderGrid();
+        }
+
+        function updateHeaderStatsAndSelect() {
+            const totalPlaylists = state.playlists.length;
+            const enabledPlaylists = state.playlists.filter(p => p.enabled);
+
+            document.getElementById('playlistsCountPill').textContent = totalPlaylists;
+            document.getElementById('totalMediaCounter').textContent = `${state.mergedChannels.length.toLocaleString('pt-BR')} mídias`;
+
+            const select = document.getElementById('playlistScopeSelect');
+            const currentVal = state.selectedScope;
+            select.innerHTML = `<option value="ALL_ACTIVE">Todas as Listas Ativas (${enabledPlaylists.length})</option>`;
+
+            state.playlists.forEach(pl => {
+                if (pl.enabled) {
+                    const opt = document.createElement('option');
+                    opt.value = pl.id;
+                    opt.textContent = `${pl.name} (${(pl.channels?.length || 0).toLocaleString('pt-BR')})`;
+                    select.appendChild(opt);
+                }
+            });
+
+            if ([...select.options].some(o => o.value === currentVal)) {
+                select.value = currentVal;
+            } else {
+                state.selectedScope = 'ALL_ACTIVE';
+                select.value = 'ALL_ACTIVE';
+            }
+
+            const subtitle = document.getElementById('activePlaylistSubtitle');
+            if (totalPlaylists === 0) {
+                subtitle.textContent = 'Nenhuma lista cadastrada';
+            } else if (state.selectedScope === 'ALL_ACTIVE') {
+                subtitle.textContent = `${enabledPlaylists.length} lista(s) ativa(s) • ${state.categories.size} categorias`;
+            } else {
+                const found = state.playlists.find(p => p.id === state.selectedScope);
+                subtitle.textContent = found ? `Lista: ${found.name} • ${state.categories.size} categorias` : '';
+            }
+
+            // Mostra ou esconde o estado vazio
+            const emptyState = document.getElementById('emptyPlaylistState');
+            const gridContainer = document.getElementById('mediaGridContainer');
+            if (state.playlists.length === 0 || state.mergedChannels.length === 0) {
+                emptyState.classList.remove('hidden');
+                gridContainer.classList.add('hidden');
+            } else {
+                emptyState.classList.add('hidden');
+                gridContainer.classList.remove('hidden');
+            }
+        }
+
+        /**
+         * 6. RENDERIZAÇÃO DE CATEGORIAS LATERAIS E ABAS FIXAS
+         */
+        function updateFixedTabsStyle() {
+            const tabs = [
+                { id: 'ALL', el: document.getElementById('tabAllBtn') },
+                { id: 'FAV', el: document.getElementById('tabFavBtn') },
+                { id: 'HISTORY', el: document.getElementById('tabHistoryBtn') }
+            ];
+            tabs.forEach(t => {
+                if (state.activeTab === t.id) {
+                    t.el.className = 'tv-focusable flex flex-col items-center justify-center py-2 px-2 rounded-xl border-2 border-accent-400 bg-accent-600 text-white font-bold text-xs gap-1';
+                } else {
+                    t.el.className = 'tv-focusable flex flex-col items-center justify-center py-2 px-2 rounded-xl border-2 border-transparent bg-tv-800 text-slate-300 hover:text-white font-semibold text-xs gap-1';
+                }
+            });
+        }
+
+        function renderSidebarCategories() {
+            updateFixedTabsStyle();
+            const container = document.getElementById('categoryListContainer');
+            const filterTerm = state.categorySearchQuery.trim().toLowerCase();
+
+            const sortedCats = Array.from(state.categories.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+            document.getElementById('categoryTotalBadge').textContent = sortedCats.length;
+
+            const fragment = document.createDocumentFragment();
+
+            for (const [groupName, count] of sortedCats) {
+                if (filterTerm && !groupName.toLowerCase().includes(filterTerm)) continue;
+
+                const isSelected = state.activeTab === groupName;
+                const btn = document.createElement('button');
+                btn.setAttribute('data-tv-zone', 'sidebar');
+                btn.className = `tv-focusable flex items-center justify-between gap-2.5 px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold border-2 shrink-0 lg:w-full text-left ${
+                    isSelected
+                        ? 'bg-accent-600/25 border-accent-400 text-white'
+                        : 'bg-tv-800/40 lg:bg-transparent border-transparent text-slate-300 hover:bg-tv-800 hover:text-white'
+                }`;
+
+                btn.innerHTML = `
+                    <div class="flex items-center gap-2.5 min-w-0">
+                        <i class="ph-fill ph-folder-simple ${isSelected ? 'text-accent-400' : 'text-slate-500'} text-base shrink-0"></i>
+                        <span class="truncate">${escapeHtml(groupName)}</span>
+                    </div>
+                    <span class="text-[11px] font-mono px-2 py-0.5 rounded-lg shrink-0 ${
+                        isSelected ? 'bg-accent-600 text-white' : 'bg-tv-800 text-slate-400'
+                    }">${count.toLocaleString('pt-BR')}</span>
+                `;
+
+                btn.addEventListener('click', () => {
+                    state.activeTab = groupName;
+                    state.currentPage = 1;
+                    document.getElementById('currentCategoryHeading').textContent = groupName;
+                    renderSidebarCategories();
+                    applyFiltersAndRenderGrid();
+                });
+
+                fragment.appendChild(btn);
+            }
+
+            container.innerHTML = '';
+            container.appendChild(fragment);
+        }
+
+        /**
+         * 7. FILTRAGEM E RENDERIZAÇÃO PAGINADA DE ALTA PERFORMANCE (SEM TRAVAR A TV)
+         */
+        function applyFiltersAndRenderGrid() {
+            const query = state.searchQuery.trim().toLowerCase();
+            const tab = state.activeTab;
+
+            let sourceList = state.mergedChannels;
+            if (tab === 'HISTORY') {
+                sourceList = state.history;
+            }
+
+            state.filteredChannels = sourceList.filter(ch => {
+                if (tab === 'FAV' && !state.favorites.has(ch.url)) return false;
+                if (tab !== 'ALL' && tab !== 'FAV' && tab !== 'HISTORY' && ch.group !== tab) return false;
+                if (query && !ch.nameLower.includes(query) && !ch.groupLower.includes(query)) return false;
+                return true;
+            });
+
+            document.getElementById('filteredItemsBadge').textContent = state.filteredChannels.length.toLocaleString('pt-BR');
+
+            const totalPages = Math.max(1, Math.ceil(state.filteredChannels.length / state.itemsPerPage));
+            if (state.currentPage > totalPages) state.currentPage = totalPages;
+
+            renderCurrentGridPage();
+        }
+
+        function renderCurrentGridPage() {
+            const grid = document.getElementById('mediaGridContainer');
+            const wrapper = document.getElementById('mediaGridWrapper');
+            const totalItems = state.filteredChannels.length;
+            const totalPages = Math.max(1, Math.ceil(totalItems / state.itemsPerPage));
+
+            // Atualiza controles de paginação
+            document.getElementById('totalPagesText').textContent = totalPages.toLocaleString('pt-BR');
+            const pageInput = document.getElementById('pageNumberInput');
+            pageInput.value = state.currentPage;
+            pageInput.max = totalPages;
+
+            document.getElementById('prevPageBtn').disabled = state.currentPage <= 1;
+            document.getElementById('nextPageBtn').disabled = state.currentPage >= totalPages;
+
+            grid.innerHTML = '';
+            wrapper.scrollTop = 0;
+
+            if (state.playlists.length === 0) return;
+
+            if (totalItems === 0) {
+                grid.className = 'flex items-center justify-center h-64';
+                grid.innerHTML = `
+                    <div class="text-center text-slate-400">
+                        <i class="ph-duotone ph-magnifying-glass text-4xl mb-2 text-slate-500"></i>
+                        <p class="text-sm font-semibold">Nenhum conteúdo encontrado para este filtro.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // Configura classes de Grade TV vs Lista TV
+            if (state.layoutMode === 'grid') {
+                grid.className = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-3.5';
+            } else {
+                grid.className = 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5';
+            }
+
+            const startIdx = (state.currentPage - 1) * state.itemsPerPage;
+            const endIdx = Math.min(startIdx + state.itemsPerPage, totalItems);
+            const slice = state.filteredChannels.slice(startIdx, endIdx);
+
+            const fragment = document.createDocumentFragment();
+
+            slice.forEach((channel, idxInSlice) => {
+                const absoluteFilteredIndex = startIdx + idxInSlice;
+                const isFav = state.favorites.has(channel.url);
+                const isPlaying = state.currentPlayingChannel && state.currentPlayingChannel.url === channel.url;
+                const initials = encodeURIComponent((channel.name || 'TV').substring(0, 2).toUpperCase());
+                const fallbackLogo = `https://placehold.co/120x120/161b29/818cf8?text=${initials}`;
+
+                const card = document.createElement('div');
+                card.setAttribute('tabindex', '0');
+                card.setAttribute('data-tv-zone', 'grid');
+                card.setAttribute('data-channel-idx', absoluteFilteredIndex);
+
+                if (state.layoutMode === 'grid') {
+                    card.className = `tv-focusable group relative flex flex-col justify-between bg-tv-900 hover:bg-tv-800 border-2 ${
+                        isPlaying ? 'border-accent-500 bg-accent-600/10' : 'border-tv-800'
+                    } rounded-2xl p-3 cursor-pointer overflow-hidden`;
+
+                    card.innerHTML = `
+                        <div>
+                            <div class="flex items-center justify-between gap-1 mb-2">
+                                <span class="text-[11px] font-mono font-bold px-2 py-0.5 rounded-md bg-tv-950 text-accent-400 border border-tv-700">
+                                    #${channel.globalNumber || (absoluteFilteredIndex + 1)}
+                                </span>
+                                <button type="button" class="fav-action-btn p-1 rounded-lg bg-tv-950/80 hover:bg-tv-700 text-slate-300" title="Favoritar">
+                                    <i class="${isFav ? 'ph-fill text-amber-400' : 'ph'} ph-star text-sm"></i>
+                                </button>
+                            </div>
+                            <div class="w-full h-24 rounded-xl bg-tv-950 border border-tv-800/90 flex items-center justify-center p-2 mb-2.5 overflow-hidden relative">
+                                <img 
+                                    src="${channel.logo ? escapeHtml(channel.logo) : fallbackLogo}" 
+                                    loading="lazy" 
+                                    onerror="this.onerror=null;this.src='${fallbackLogo}';" 
+                                    alt="" 
+                                    class="max-h-full max-w-full object-contain transition-transform duration-200 group-hover:scale-105"
+                                >
+                                <div class=" inset-0 bg-accent-600/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                    <div class="w-10 h-10 rounded-full bg-accent-600 text-white flex items-center justify-center shadow-lg">
+                                        <i class="ph-fill ph-play text-lg"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            <h4 class="text-xs sm:text-sm font-bold text-white truncate leading-snug">${escapeHtml(channel.name)}</h4>
+                            <div class="flex items-center justify-between gap-1 mt-1">
+                                <span class="text-[11px] text-slate-400 truncate">${escapeHtml(channel.group)}</span>
+                                <span class="text-[10px] text-accent-400/80 font-medium truncate max-w-[75px]">${escapeHtml(channel.playlistName || '')}</span>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    // Layout Lista TV
+                    card.className = `tv-focusable group flex items-center justify-between gap-3 bg-tv-900 hover:bg-tv-800 border-2 ${
+                        isPlaying ? 'border-accent-500 bg-accent-600/10' : 'border-tv-800'
+                    } rounded-2xl p-3 cursor-pointer`;
+
+                    card.innerHTML = `
+                        <div class="flex items-center gap-3 min-w-0 flex-1">
+                            <span class="text-xs font-mono font-extrabold px-2.5 py-1.5 rounded-xl bg-tv-950 text-accent-400 border border-tv-700 shrink-0">
+                                #${channel.globalNumber || (absoluteFilteredIndex + 1)}
+                            </span>
+                            <div class="w-12 h-12 rounded-xl bg-tv-950 border border-tv-800 flex items-center justify-center p-1 shrink-0 overflow-hidden">
+                                <img 
+                                    src="${channel.logo ? escapeHtml(channel.logo) : fallbackLogo}" 
+                                    loading="lazy" 
+                                    onerror="this.onerror=null;this.src='${fallbackLogo}';" 
+                                    alt="" 
+                                    class="max-h-full max-w-full object-contain"
+                                >
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <h4 class="text-sm font-bold text-white truncate">${escapeHtml(channel.name)}</h4>
+                                <p class="text-xs text-slate-400 truncate mt-0.5">${escapeHtml(channel.group)} • <span class="text-accent-400">${escapeHtml(channel.playlistName || '')}</span></p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2 shrink-0">
+                            <button type="button" class="fav-action-btn p-2 rounded-xl bg-tv-800 hover:bg-tv-700 text-slate-300">
+                                <i class="${isFav ? 'ph-fill text-amber-400' : 'ph'} ph-star text-base"></i>
+                            </button>
+                            <div class="w-9 h-9 rounded-xl bg-accent-600/20 group-hover:bg-accent-600 text-accent-400 group-hover:text-white flex items-center justify-center transition">
+                                <i class="ph-fill ph-play text-base"></i>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                // Botão Favoritar
+                const favBtn = card.querySelector('.fav-action-btn');
+                favBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    toggleFavoriteChannel(channel);
+                });
+
+                // Clique ou Enter abre o Player em Tela Cheia imediatamente
+                card.addEventListener('click', () => {
+                    openFullscreenPlayer(absoluteFilteredIndex);
+                });
+
+                card.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        openFullscreenPlayer(absoluteFilteredIndex);
+                    }
+                });
+
+                fragment.appendChild(card);
+            });
+
+            grid.appendChild(fragment);
+        }
+
+        function toggleFavoriteChannel(channel) {
+            if (!channel) return;
+            if (state.favorites.has(channel.url)) {
+                state.favorites.delete(channel.url);
+                showToast(`Removido dos favoritos: ${channel.name}`, 'info');
+            } else {
+                state.favorites.add(channel.url);
+                showToast(`Adicionado aos favoritos: ${channel.name}`, 'success');
+            }
+            saveFavoritesToStorage();
+            updateOsdFavoriteIcon();
+            if (state.activeTab === 'FAV') {
+                applyFiltersAndRenderGrid();
+            } else {
+                renderCurrentGridPage();
+            }
+        }
+
+        /**
+         * 8. PLAYER EM TELA CHEIA (FULLSCREEN API + OSD DE TV + TROCA DE CANAL)
+         */
+        async function openFullscreenPlayer(filteredIndex) {
+            if (filteredIndex < 0 || filteredIndex >= state.filteredChannels.length) return;
+
+            state.currentChannelIndex = filteredIndex;
+            const channel = state.filteredChannels[filteredIndex];
+            state.currentPlayingChannel = channel;
+            state.isPlayerOpen = true;
+
+            const overlay = document.getElementById('fullscreenPlayerOverlay');
+            overlay.classList.remove('hidden');
+
+            // Aciona a Fullscreen API do navegador para experiência 100% TV
+            try {
+                if (!document.fullscreenElement && overlay.requestFullscreen) {
+                    await overlay.requestFullscreen();
+                } else if (!document.webkitFullscreenElement && overlay.webkitRequestFullscreen) {
+                    overlay.webkitRequestFullscreen();
+                }
+            } catch (e) {
+                // Caso o ambiente bloqueie Fullscreen API nativa, o overlay fixed inset-0 já ocupa 100vw/100vh
+            }
+
+            loadChannelInFullscreenPlayer(channel);
+            showPlayerOsd();
+        }
+
+        function loadChannelInFullscreenPlayer(channel) {
+            if (!channel) return;
+            addChannelToHistory(channel);
+
+            const video = document.getElementById('tvVideoPlayer');
+            const buffering = document.getElementById('playerBufferingIndicator');
+            const errorScreen = document.getElementById('playerErrorScreen');
+            const qualitySelect = document.getElementById('osdQualitySelect');
+
+            errorScreen.classList.add('hidden');
+            buffering.classList.remove('hidden');
+            document.getElementById('bufferingChannelTitle').textContent = `Sintonizando: ${channel.name}`;
+
+            // Atualiza metadados do OSD
+            const num = String(channel.globalNumber || (state.currentChannelIndex + 1)).padStart(3, '0');
+            document.getElementById('osdChannelNumber').textContent = `#${num}`;
+            document.getElementById('osdChannelTitle').textContent = channel.name;
+            document.getElementById('osdChannelCategory').textContent = channel.group;
+            document.getElementById('osdPlaylistNameBadge').textContent = channel.playlistName || 'Lista IPTV';
+
+            const initials = encodeURIComponent((channel.name || 'TV').substring(0, 2).toUpperCase());
+            const fallbackLogo = `https://placehold.co/120x120/161b29/818cf8?text=${initials}`;
+            const logoEl = document.getElementById('osdChannelLogo');
+            logoEl.src = channel.logo || fallbackLogo;
+            logoEl.onerror = () => { logoEl.src = fallbackLogo; };
+
+            updateOsdFavoriteIcon();
+            updateClockInOsd();
+
+            // Destrói HLS anterior se existir
+            if (state.hls) {
+                state.hls.destroy();
+                state.hls = null;
+            }
+
+            video.pause();
+            video.removeAttribute('src');
+            video.load();
+            qualitySelect.classList.add('hidden');
+            qualitySelect.innerHTML = '<option value="-1">Auto HD</option>';
+
+            const streamUrl = channel.url.trim();
+            const isVodFile = /\.(mp4|mkv|webm|mov|avi)(\?.*)?$/i.test(streamUrl);
+            const isM3U8 = /\.m3u8(\?.*)?$/i.test(streamUrl) || !isVodFile;
+
+            // Badge AO VIVO vs VOD e barra de progresso
+            const badge = document.getElementById('osdStreamTypeBadge');
+            const vodSeek = document.getElementById('osdVodSeekWrapper');
+            if (isVodFile) {
+                badge.className = 'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-sky-500/20 text-sky-400 border border-sky-500/30 text-[11px] font-extrabold uppercase tracking-wider';
+                badge.innerHTML = '<i class="ph-fill ph-film-strip"></i> VOD / MÍDIA';
+                vodSeek.classList.remove('hidden');
+            } else {
+                badge.className = 'inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[11px] font-extrabold uppercase tracking-wider';
+                badge.innerHTML = '<span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span> AO VIVO';
+                vodSeek.classList.add('hidden');
+            }
+
+            if (isM3U8 && Hls.isSupported()) {
+                const hls = new Hls({
+                    enableWorker: true,
+                    lowLatencyMode: true,
+                    backBufferLength: 60
+                });
+                state.hls = hls;
+                hls.loadSource(streamUrl);
+                hls.attachMedia(video);
+
+                hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+                    buffering.classList.add('hidden');
+                    // Popula seletor de resolução se houver múltiplos níveis
+                    if (data.levels && data.levels.length > 1) {
+                        qualitySelect.innerHTML = '<option value="-1">Qualidade: Auto</option>';
+                        data.levels.forEach((lvl, idx) => {
+                            const label = lvl.height ? `${lvl.height}p` : `Nível ${idx + 1}`;
+                            const opt = document.createElement('option');
+                            opt.value = idx;
+                            opt.textContent = label;
+                            qualitySelect.appendChild(opt);
+                        });
+                        qualitySelect.classList.remove('hidden');
+                    }
+                    video.play().catch(() => {});
+                });
+
+                hls.on(Hls.Events.ERROR, (event, data) => {
+                    if (data.fatal) {
+                        switch (data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                buffering.classList.add('hidden');
+                                triggerPlayerError('Falha de conexão com o stream ou bloqueio CORS/HTTP.');
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                hls.destroy();
+                                triggerPlayerError('O formato de transmissão não pôde ser decodificado.');
+                                break;
+                        }
+                    }
+                });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl') || isVodFile) {
+                video.src = streamUrl;
+                video.onloadedmetadata = () => {
+                    buffering.classList.add('hidden');
+                    video.play().catch(() => {});
+                };
+                video.onerror = () => {
+                    buffering.classList.add('hidden');
+                    triggerPlayerError('Não foi possível abrir o arquivo de mídia direto.');
+                };
+            } else {
+                buffering.classList.add('hidden');
+                triggerPlayerError('Formato de stream incompatível com o navegador.');
+            }
+
+            if (state.isMiniGuideOpen) {
+                renderMiniGuideChannels();
+            }
+        }
+
+        function triggerPlayerError(msg) {
+            document.getElementById('playerBufferingIndicator').classList.add('hidden');
+            const errScreen = document.getElementById('playerErrorScreen');
+            document.getElementById('playerErrorDetails').textContent = msg;
+            errScreen.classList.remove('hidden');
+            // Foca automaticamente no botão "Tentar Reconectar" para controle remoto
+            setTimeout(() => {
+                document.getElementById('errorRetryBtn').focus();
+            }, 60);
+        }
+
+        function closeFullscreenPlayer() {
+            state.isPlayerOpen = false;
+            state.isMiniGuideOpen = false;
+            document.getElementById('playerMiniGuideDrawer').classList.add('hidden');
+
+            const video = document.getElementById('tvVideoPlayer');
+            if (state.hls) {
+                state.hls.destroy();
+                state.hls = null;
+            }
+            video.pause();
+            video.removeAttribute('src');
+            video.load();
+
+            if (document.fullscreenElement && document.exitFullscreen) {
+                document.exitFullscreen().catch(() => {});
+            }
+
+            document.getElementById('fullscreenPlayerOverlay').classList.add('hidden');
+            clearTimeout(state.osdTimer);
+
+            // Re-renderiza a página atual e devolve o foco ao card assistido
+            renderCurrentGridPage();
+            setTimeout(() => {
+                const targetCard = document.querySelector(`[data-channel-idx="${state.currentChannelIndex}"]`);
+                if (targetCard) targetCard.focus();
+            }, 80);
+        }
+
+        function switchChannelRelative(delta) {
+            if (state.filteredChannels.length === 0) return;
+            let nextIdx = state.currentChannelIndex + delta;
+            if (nextIdx < 0) nextIdx = state.filteredChannels.length - 1;
+            if (nextIdx >= state.filteredChannels.length) nextIdx = 0;
+
+            state.currentChannelIndex = nextIdx;
+            const nextCh = state.filteredChannels[nextIdx];
+            state.currentPlayingChannel = nextCh;
+
+            // Garante que a página da grade acompanha o canal atual
+            state.currentPage = Math.floor(nextIdx / state.itemsPerPage) + 1;
+
+            loadChannelInFullscreenPlayer(nextCh);
+            showPlayerOsd();
+        }
+
+        function showPlayerOsd() {
+            const osd = document.getElementById('playerOsdContainer');
+            const overlay = document.getElementById('fullscreenPlayerOverlay');
+            osd.classList.remove('osd-hidden');
+            overlay.classList.remove('cursor-none-forced');
+            updateClockInOsd();
+
+            clearTimeout(state.osdTimer);
+            state.osdTimer = setTimeout(() => {
+                const video = document.getElementById('tvVideoPlayer');
+                if (!video.paused && !state.isMiniGuideOpen && document.getElementById('playerErrorScreen').classList.contains('hidden')) {
+                    osd.classList.add('osd-hidden');
+                    overlay.classList.add('cursor-none-forced');
+                }
+            }, 4200);
+        }
+
+        function updateOsdFavoriteIcon() {
+            if (!state.currentPlayingChannel) return;
+            const isFav = state.favorites.has(state.currentPlayingChannel.url);
+            const icon = document.getElementById('osdFavIcon');
+            icon.className = isFav ? 'ph-fill ph-star text-amber-400 text-lg' : 'ph ph-star text-lg';
+        }
+
+        function updateClockInOsd() {
+            const now = new Date();
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            document.getElementById('osdClock').textContent = `${hh}:${mm}`;
+        }
+
+        function formatSeconds(sec) {
+            if (!isFinite(sec) || sec < 0) return '00:00';
+            const hrs = Math.floor(sec / 3600);
+            const mins = Math.floor((sec % 3600) / 60);
+            const s = Math.floor(sec % 60);
+            if (hrs > 0) {
+                return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+            }
+            return `${String(mins).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        }
+
+        /**
+         * 9. MINI-GUIA LATERAL SOBREPOSTO AO PLAYER EM TELA CHEIA
+         */
+        function toggleMiniGuideDrawer(forceState) {
+            const drawer = document.getElementById('playerMiniGuideDrawer');
+            const nextState = typeof forceState === 'boolean' ? forceState : !state.isMiniGuideOpen;
+            state.isMiniGuideOpen = nextState;
+
+            if (state.isMiniGuideOpen) {
+                drawer.classList.remove('hidden');
+                document.getElementById('miniGuideSearchInput').value = '';
+                renderMiniGuideChannels('');
+                setTimeout(() => {
+                    const activeItem = drawer.querySelector('[data-miniguide-active="true"]');
+                    if (activeItem) activeItem.focus();
+                    else document.getElementById('miniGuideSearchInput').focus();
+                }, 60);
+            } else {
+                drawer.classList.add('hidden');
+                showPlayerOsd();
+            }
+        }
+
+        function renderMiniGuideChannels(query = '') {
+            const container = document.getElementById('miniGuideListContainer');
+            const q = query.trim().toLowerCase();
+
+            // Para não pesar no DOM se a lista tiver 50.000 itens, exibe uma janela de 80 canais ao redor do canal atual ou os 80 primeiros da busca
+            let listToRender = [];
+            if (q) {
+                for (let i = 0; i < state.filteredChannels.length; i++) {
+                    const ch = state.filteredChannels[i];
+                    if (ch.nameLower.includes(q) || ch.groupLower.includes(q)) {
+                        listToRender.push({ ch, index: i });
+                        if (listToRender.length >= 80) break;
+                    }
+                }
+            } else {
+                const start = Math.max(0, state.currentChannelIndex - 30);
+                const end = Math.min(state.filteredChannels.length, start + 80);
+                for (let i = start; i < end; i++) {
+                    listToRender.push({ ch: state.filteredChannels[i], index: i });
+                }
+            }
+
+            const fragment = document.createDocumentFragment();
+            listToRender.forEach(({ ch, index }) => {
+                const isCurrent = index === state.currentChannelIndex;
+                const btn = document.createElement('button');
+                btn.setAttribute('data-tv-zone', 'miniguide');
+                if (isCurrent) btn.setAttribute('data-miniguide-active', 'true');
+
+                btn.className = `tv-focusable w-full flex items-center justify-between gap-2.5 p-2.5 rounded-xl border-2 text-left ${
+                    isCurrent
+                        ? 'bg-accent-600/25 border-accent-400 text-white'
+                        : 'bg-tv-800/70 hover:bg-tv-800 border-transparent text-slate-200'
+                }`;
+
+                btn.innerHTML = `
+                    <div class="flex items-center gap-2.5 min-w-0">
+                        <span class="text-xs font-mono font-bold text-accent-400 shrink-0">#${ch.globalNumber || (index + 1)}</span>
+                        <div class="min-w-0">
+                            <p class="text-xs font-bold truncate">${escapeHtml(ch.name)}</p>
+                            <p class="text-[10px] text-slate-400 truncate">${escapeHtml(ch.group)}</p>
+                        </div>
+                    </div>
+                    ${isCurrent ? '<i class="ph-fill ph-speaker-high text-accent-400 animate-pulse shrink-0"></i>' : '<i class="ph-fill ph-play text-xs text-slate-500 shrink-0"></i>'}
+                `;
+
+                btn.addEventListener('click', () => {
+                    state.currentChannelIndex = index;
+                    state.currentPlayingChannel = ch;
+                    loadChannelInFullscreenPlayer(ch);
+                    renderMiniGuideChannels(document.getElementById('miniGuideSearchInput').value);
+                });
+
+                fragment.appendChild(btn);
+            });
+
+            container.innerHTML = '';
+            container.appendChild(fragment);
+        }
+
+        /**
+         * 10. GERENCIADOR DE MÚLTIPLAS LISTAS IPTV (MODAL)
+         */
+        function openPlaylistManagerModal() {
+            renderSavedPlaylistsInModal();
+            document.getElementById('playlistManagerModal').classList.remove('hidden');
+            setTimeout(() => {
+                document.getElementById('newPlaylistNameInput').focus();
+            }, 80);
+        }
+
+        function closePlaylistManagerModal() {
+            document.getElementById('playlistManagerModal').classList.add('hidden');
+        }
+
+        function renderSavedPlaylistsInModal() {
+            const container = document.getElementById('savedPlaylistsContainer');
+            container.innerHTML = '';
+
+            if (state.playlists.length === 0) {
+                container.innerHTML = `
+                    <div class="bg-tv-950/60 border border-tv-800 rounded-2xl p-6 text-center text-slate-400">
+                        <i class="ph-duotone ph-folder-open text-3xl mb-2 text-slate-500"></i>
+                        <p class="text-xs font-semibold">Você ainda não adicionou nenhuma lista IPTV.</p>
+                        <p class="text-[11px] text-slate-500 mt-1">Use o painel ao lado para importar via URL, Arquivo ou Texto.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            state.playlists.forEach((pl) => {
+                const item = document.createElement('div');
+                item.className = `bg-tv-950/90 border-2 ${pl.enabled ? 'border-tv-700' : 'border-tv-800 opacity-60'} rounded-2xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3`;
+
+                const sourceBadge = pl.sourceType === 'url' ? 'URL Remota' : (pl.sourceType === 'file' ? 'Arquivo Local' : 'Texto M3U');
+
+                item.innerHTML = `
+                    <div class="flex items-center gap-3 min-w-0 flex-1">
+                        <input 
+                            type="checkbox" 
+                            ${pl.enabled ? 'checked' : ''} 
+                            data-tv-zone="modal"
+                            class="toggle-pl-checkbox tv-focusable w-5 h-5 rounded accent-indigo-500 cursor-pointer shrink-0"
+                            title="Ativar ou desativar esta lista"
+                        >
+                        <div class="min-w-0 flex-1">
+                            <div class="flex items-center gap-2">
+                                <input 
+                                    type="text" 
+                                    value="${escapeHtml(pl.name)}" 
+                                    data-tv-zone="modal"
+                                    class="rename-pl-input tv-focusable bg-transparent hover:bg-tv-800 focus:bg-tv-800 border border-transparent focus:border-tv-600 rounded-lg px-1.5 py-0.5 text-sm font-extrabold text-white truncate w-full max-w-[220px]"
+                                    title="Clique para editar o nome da lista"
+                                >
+                                <span class="text-[10px] font-bold px-2 py-0.5 rounded-md bg-tv-800 text-accent-400 border border-tv-700 shrink-0">
+                                    ${(pl.channels?.length || 0).toLocaleString('pt-BR')} mídias
+                                </span>
+                            </div>
+                            <p class="text-[11px] text-slate-400 truncate mt-0.5 px-1.5">
+                                ${sourceBadge} ${pl.url ? `• ${escapeHtml(pl.url)}` : ''}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-1.5 shrink-0">
+                        ${pl.sourceType === 'url' ? `
+                            <button type="button" data-tv-zone="modal" class="refresh-single-pl-btn tv-focusable px-2.5 py-1.5 rounded-xl bg-tv-800 hover:bg-tv-700 text-slate-200 text-xs font-semibold flex items-center gap-1 border border-tv-700" title="Atualizar canais desta URL">
+                                <i class="ph-bold ph-arrows-clockwise"></i> Atualizar
+                            </button>
+                        ` : ''}
+                        <button type="button" data-tv-zone="modal" class="only-this-pl-btn tv-focusable px-2.5 py-1.5 rounded-xl bg-accent-600/20 hover:bg-accent-600 text-accent-300 hover:text-white text-xs font-semibold border border-accent-500/30" title="Ver apenas os canais desta lista">
+                            Focar
+                        </button>
+                        <button type="button" data-tv-zone="modal" class="delete-pl-btn tv-focusable p-2 rounded-xl bg-rose-500/15 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-500/30" title="Excluir lista">
+                            <i class="ph-bold ph-trash"></i>
+                        </button>
+                    </div>
+                `;
+
+                // Ativar / Desativar lista
+                item.querySelector('.toggle-pl-checkbox').addEventListener('change', async (e) => {
+                    pl.enabled = e.target.checked;
+                    await dbSavePlaylist(pl);
+                    rebuildMergedChannels();
+                    renderSavedPlaylistsInModal();
+                });
+
+                // Renomear lista
+                item.querySelector('.rename-pl-input').addEventListener('change', async (e) => {
+                    const newName = e.target.value.trim() || 'Lista IPTV';
+                    pl.name = newName;
+                    pl.channels.forEach(c => c.playlistName = newName);
+                    await dbSavePlaylist(pl);
+                    rebuildMergedChannels();
+                    showToast(`Lista renomeada para "${newName}"`, 'info');
+                });
+
+                // Atualizar lista de URL
+                const refreshBtn = item.querySelector('.refresh-single-pl-btn');
+                if (refreshBtn) {
+                    refreshBtn.addEventListener('click', () => refreshSinglePlaylistByUrl(pl));
+                }
+
+                // Focar apenas nesta lista
+                item.querySelector('.only-this-pl-btn').addEventListener('click', async () => {
+                    pl.enabled = true;
+                    await dbSavePlaylist(pl);
+                    state.selectedScope = pl.id;
+                    rebuildMergedChannels();
+                    closePlaylistManagerModal();
+                    showToast(`Exibindo lista: ${pl.name}`, 'info');
+                });
+
+                // Excluir lista
+                item.querySelector('.delete-pl-btn').addEventListener('click', async () => {
+                    await dbDeletePlaylist(pl.id);
+                    state.playlists = state.playlists.filter(p => p.id !== pl.id);
+                    rebuildMergedChannels();
+                    renderSavedPlaylistsInModal();
+                    showToast(`Lista "${pl.name}" removida.`, 'info');
+                });
+
+                container.appendChild(item);
+            });
+        }
+
+        async function importAndSaveNewPlaylist({ name, sourceType, url = '', rawText }) {
+            const progressBox = document.getElementById('importProgressContainer');
+            const progressBar = document.getElementById('importProgressBar');
+            const progressLabel = document.getElementById('importProgressLabel');
+            const progressPct = document.getElementById('importProgressPct');
+
+            progressBox.classList.remove('hidden');
+            progressBar.style.width = '5%';
+            progressPct.textContent = '5%';
+            progressLabel.textContent = `Analisando "${name}"...`;
+
+            const playlistId = 'pl_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+
+            const channels = await parseM3UChunked(rawText, name, playlistId, (pct, count) => {
+                progressBar.style.width = `${pct}%`;
+                progressPct.textContent = `${pct}%`;
+                progressLabel.textContent = `Importando (${count.toLocaleString('pt-BR')} mídias)...`;
+            });
+
+            if (channels.length === 0) {
+                progressBox.classList.add('hidden');
+                showToast('Nenhum canal ou mídia válido encontrado na lista informada.', 'error');
+                return false;
+            }
+
+            const newPlaylist = {
+                id: playlistId,
+                name: name,
+                sourceType: sourceType,
+                url: url,
+                enabled: true,
+                updatedAt: new Date().toISOString(),
+                channels: channels
+            };
+
+            await dbSavePlaylist(newPlaylist);
+            state.playlists.push(newPlaylist);
+            rebuildMergedChannels();
+            renderSavedPlaylistsInModal();
+
+            setTimeout(() => {
+                progressBox.classList.add('hidden');
+            }, 300);
+
+            showToast(`Lista "${name}" adicionada com ${channels.length.toLocaleString('pt-BR')} mídias!`, 'success');
+            return true;
+        }
+
+        async function refreshSinglePlaylistByUrl(pl) {
+            if (!pl.url) return;
+            showToast(`Atualizando "${pl.name}"...`, 'info');
+            try {
+                const res = await fetch(pl.url);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const text = await res.text();
+                const updatedChannels = await parseM3UChunked(text, pl.name, pl.id);
+                if (updatedChannels.length > 0) {
+                    pl.channels = updatedChannels;
+                    pl.updatedAt = new Date().toISOString();
+                    await dbSavePlaylist(pl);
+                    rebuildMergedChannels();
+                    renderSavedPlaylistsInModal();
+                    showToast(`"${pl.name}" atualizada (${updatedChannels.length.toLocaleString('pt-BR')} mídias)!`, 'success');
+                }
+            } catch (err) {
+                showToast(`Não foi possível atualizar "${pl.name}" (verifique CORS ou conexão).`, 'error');
+            }
+        }
+
+        /**
+         * 11. NAVEGAÇÃO ESPACIAL POR SETAS (D-PAD / CONTROLE REMOTO DE SMART TV)
+         * Calcula geometricamente o elemento focável mais próximo na direção da seta.
+         */
+        function handleSpatialNavigation(direction) {
+            const activeEl = document.activeElement;
+            const visibleFocusables = Array.from(document.querySelectorAll('.tv-focusable')).filter(el => {
+                if (el.disabled) return false;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            });
+
+            if (visibleFocusables.length === 0) return;
+
+            if (!activeEl || !visibleFocusables.includes(activeEl)) {
+                visibleFocusables[0].focus();
+                return;
+            }
+
+            const currentRect = activeEl.getBoundingClientRect();
+            const curCenterX = currentRect.left + currentRect.width / 2;
+            const curCenterY = currentRect.top + currentRect.height / 2;
+
+            let bestCandidate = null;
+            let bestScore = Infinity;
+
+            for (const candidate of visibleFocusables) {
+                if (candidate === activeEl) continue;
+
+                const rect = candidate.getBoundingClientRect();
+                const candCenterX = rect.left + rect.width / 2;
+                const candCenterY = rect.top + rect.height / 2;
+
+                const dx = candCenterX - curCenterX;
+                const dy = candCenterY - curCenterY;
+
+                let isValidDirection = false;
+                let primaryDist = 0;
+                let secondaryDist = 0;
+
+                if (direction === 'ArrowRight' && dx > 10) {
+                    isValidDirection = true;
+                    primaryDist = dx;
+                    secondaryDist = Math.abs(dy);
+                } else if (direction === 'ArrowLeft' && dx < -10) {
+                    isValidDirection = true;
+                    primaryDist = Math.abs(dx);
+                    secondaryDist = Math.abs(dy);
+                } else if (direction === 'ArrowDown' && dy > 10) {
+                    isValidDirection = true;
+                    primaryDist = dy;
+                    secondaryDist = Math.abs(dx);
+                } else if (direction === 'ArrowUp' && dy < -10) {
+                    isValidDirection = true;
+                    primaryDist = Math.abs(dy);
+                    secondaryDist = Math.abs(dx);
+                }
+
+                if (isValidDirection) {
+                    // Pondera distância no eixo principal + penalidade de desalinhamento transversal
+                    const score = primaryDist + (secondaryDist * 2.6);
+                    if (score < bestScore) {
+                        bestScore = score;
+                        bestCandidate = candidate;
+                    }
+                }
+            }
+
+            if (bestCandidate) {
+                bestCandidate.focus();
+                bestCandidate.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+            }
+        }
+
+        /**
+         * 12. EVENT LISTENERS E ATALHOS DE CONTROLE REMOTO / TECLADO
+         */
+        function initEventListeners() {
+            const video = document.getElementById('tvVideoPlayer');
+
+            // Busca Principal com Debounce
+            let searchTimer = null;
+            const searchInput = document.getElementById('searchInput');
+            const clearSearchBtn = document.getElementById('clearSearchBtn');
+
+            searchInput.addEventListener('input', (e) => {
+                clearTimeout(searchTimer);
+                const val = e.target.value;
+                clearSearchBtn.classList.toggle('hidden', !val);
+                searchTimer = setTimeout(() => {
+                    state.searchQuery = val;
+                    state.currentPage = 1;
+                    applyFiltersAndRenderGrid();
+                }, 200);
+            });
+
+            clearSearchBtn.addEventListener('click', () => {
+                searchInput.value = '';
+                state.searchQuery = '';
+                clearSearchBtn.classList.add('hidden');
+                state.currentPage = 1;
+                applyFiltersAndRenderGrid();
+            });
+
+            // Filtro de Categorias
+            document.getElementById('categorySearchInput').addEventListener('input', (e) => {
+                state.categorySearchQuery = e.target.value;
+                renderSidebarCategories();
+            });
+
+            // Abas Fixas: Todos, Favoritos, Histórico
+            document.getElementById('tabAllBtn').addEventListener('click', () => {
+                state.activeTab = 'ALL';
+                state.currentPage = 1;
+                document.getElementById('currentCategoryHeading').textContent = 'Todos os Conteúdos';
+                renderSidebarCategories();
+                applyFiltersAndRenderGrid();
+            });
+
+            document.getElementById('tabFavBtn').addEventListener('click', () => {
+                state.activeTab = 'FAV';
+                state.currentPage = 1;
+                document.getElementById('currentCategoryHeading').textContent = 'Meus Canais Favoritos';
+                renderSidebarCategories();
+                applyFiltersAndRenderGrid();
+            });
+
+            document.getElementById('tabHistoryBtn').addEventListener('click', () => {
+                state.activeTab = 'HISTORY';
+                state.currentPage = 1;
+                document.getElementById('currentCategoryHeading').textContent = 'Assistidos Recentemente';
+                renderSidebarCategories();
+                applyFiltersAndRenderGrid();
+            });
+
+            // Seletor de Escopo de Lista (Todas Ativas vs Específica)
+            document.getElementById('playlistScopeSelect').addEventListener('change', (e) => {
+                state.selectedScope = e.target.value;
+                state.currentPage = 1;
+                rebuildMergedChannels();
+            });
+
+            // Botão Atualizar Todas as Listas de URL
+            document.getElementById('refreshPlaylistsBtn').addEventListener('click', async () => {
+                const urlLists = state.playlists.filter(p => p.enabled && p.sourceType === 'url' && p.url);
+                if (urlLists.length === 0) {
+                    showToast('Nenhuma lista ativa com URL remota para atualizar.', 'info');
+                    return;
+                }
+                for (const pl of urlLists) {
+                    await refreshSinglePlaylistByUrl(pl);
+                }
+            });
+
+            // Alternar Layout Grade vs Lista e Itens por Página
+            document.getElementById('pageSizeSelect').addEventListener('change', (e) => {
+                state.itemsPerPage = parseInt(e.target.value, 10) || 36;
+                state.currentPage = 1;
+                renderCurrentGridPage();
+            });
+
+            document.getElementById('layoutGridBtn').addEventListener('click', () => {
+                state.layoutMode = 'grid';
+                document.getElementById('layoutGridBtn').className = 'tv-focusable p-2 rounded-xl bg-accent-600 text-white border-2 border-transparent';
+                document.getElementById('layoutListBtn').className = 'tv-focusable p-2 rounded-xl bg-tv-800 text-slate-400 hover:text-white border-2 border-transparent';
+                renderCurrentGridPage();
+            });
+
+            document.getElementById('layoutListBtn').addEventListener('click', () => {
+                state.layoutMode = 'list';
+                document.getElementById('layoutListBtn').className = 'tv-focusable p-2 rounded-xl bg-accent-600 text-white border-2 border-transparent';
+                document.getElementById('layoutGridBtn').className = 'tv-focusable p-2 rounded-xl bg-tv-800 text-slate-400 hover:text-white border-2 border-transparent';
+                renderCurrentGridPage();
+            });
+
+            // Paginação
+            document.getElementById('prevPageBtn').addEventListener('click', () => {
+                if (state.currentPage > 1) {
+                    state.currentPage--;
+                    renderCurrentGridPage();
+                }
+            });
+
+            document.getElementById('nextPageBtn').addEventListener('click', () => {
+                const totalPages = Math.ceil(state.filteredChannels.length / state.itemsPerPage);
+                if (state.currentPage < totalPages) {
+                    state.currentPage++;
+                    renderCurrentGridPage();
+                }
+            });
+
+            document.getElementById('pageNumberInput').addEventListener('change', (e) => {
+                const totalPages = Math.max(1, Math.ceil(state.filteredChannels.length / state.itemsPerPage));
+                let val = parseInt(e.target.value, 10);
+                if (isNaN(val) || val < 1) val = 1;
+                if (val > totalPages) val = totalPages;
+                state.currentPage = val;
+                renderCurrentGridPage();
+            });
+
+            // Controles do Modal Gerenciador de Múltiplas Listas
+            document.getElementById('openManagerModalBtn').addEventListener('click', openPlaylistManagerModal);
+            document.getElementById('closeManagerModalBtn').addEventListener('click', closePlaylistManagerModal);
+
+            document.getElementById('clearAllPlaylistsBtn').addEventListener('click', async () => {
+                if (state.playlists.length === 0) return;
+                await dbClearAllPlaylists();
+                state.playlists = [];
+                rebuildMergedChannels();
+                renderSavedPlaylistsInModal();
+                showToast('Todas as listas foram removidas.', 'info');
+            });
+
+            // Abas de Método de Importação no Modal
+            const tabUrl = document.getElementById('methodTabUrl');
+            const tabFile = document.getElementById('methodTabFile');
+            const tabRaw = document.getElementById('methodTabRaw');
+            const panelUrl = document.getElementById('panelInputUrl');
+            const panelFile = document.getElementById('panelInputFile');
+            const panelRaw = document.getElementById('panelInputRaw');
+
+            function switchImportTab(mode) {
+                tabUrl.className = `tv-focusable py-1.5 rounded-lg text-xs font-bold ${mode === 'url' ? 'bg-accent-600 text-white' : 'text-slate-400 hover:text-white'}`;
+                tabFile.className = `tv-focusable py-1.5 rounded-lg text-xs font-bold ${mode === 'file' ? 'bg-accent-600 text-white' : 'text-slate-400 hover:text-white'}`;
+                tabRaw.className = `tv-focusable py-1.5 rounded-lg text-xs font-bold ${mode === 'raw' ? 'bg-accent-600 text-white' : 'text-slate-400 hover:text-white'}`;
+                panelUrl.classList.toggle('hidden', mode !== 'url');
+                panelFile.classList.toggle('hidden', mode !== 'file');
+                panelRaw.classList.toggle('hidden', mode !== 'raw');
+            }
+
+            tabUrl.addEventListener('click', () => switchImportTab('url'));
+            tabFile.addEventListener('click', () => switchImportTab('file'));
+            tabRaw.addEventListener('click', () => switchImportTab('raw'));
+
+            // Importar via URL
+            document.getElementById('submitUrlPlaylistBtn').addEventListener('click', async () => {
+                const urlInput = document.getElementById('newPlaylistUrlInput');
+                const nameInput = document.getElementById('newPlaylistNameInput');
+                const url = urlInput.value.trim();
+                if (!url) {
+                    showToast('Informe a URL da lista .m3u ou .m3u8', 'error');
+                    return;
+                }
+                const name = nameInput.value.trim() || `Lista URL #${state.playlists.length + 1}`;
+                const btn = document.getElementById('submitUrlPlaylistBtn');
+                btn.disabled = true;
+
+                try {
+                    const res = await fetch(url);
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const rawText = await res.text();
+                    const ok = await importAndSaveNewPlaylist({ name, sourceType: 'url', url, rawText });
+                    if (ok) {
+                        urlInput.value = '';
+                        nameInput.value = '';
+                    }
+                } catch (err) {
+                    showToast('Falha ao baixar URL (servidor bloqueia CORS ou link offline). Baixe o arquivo .m3u e importe na aba Arquivo.', 'error');
+                } finally {
+                    btn.disabled = false;
+                }
+            });
+
+            // Importar via Arquivo Local
+            const fileInput = document.getElementById('newPlaylistFileInput');
+            fileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const nameInput = document.getElementById('newPlaylistNameInput');
+                const name = nameInput.value.trim() || file.name.replace(/\.(m3u8|m3u|txt)$/i, '');
+
+                const reader = new FileReader();
+                reader.onload = async (ev) => {
+                    const ok = await importAndSaveNewPlaylist({
+                        name,
+                        sourceType: 'file',
+                        url: file.name,
+                        rawText: ev.target.result
+                    });
+                    if (ok) nameInput.value = '';
+                };
+                reader.readAsText(file);
+                e.target.value = '';
+            });
+
+            // Importar via Texto M3U Colado
+            document.getElementById('submitRawPlaylistBtn').addEventListener('click', async () => {
+                const rawInput = document.getElementById('newPlaylistRawInput');
+                const nameInput = document.getElementById('newPlaylistNameInput');
+                const rawText = rawInput.value.trim();
+                if (!rawText) {
+                    showToast('Cole o conteúdo #EXTM3U da sua lista.', 'error');
+                    return;
+                }
+                const name = nameInput.value.trim() || `Lista M3U #${state.playlists.length + 1}`;
+                const ok = await importAndSaveNewPlaylist({ name, sourceType: 'raw', rawText });
+                if (ok) {
+                    rawInput.value = '';
+                    nameInput.value = '';
+                }
+            });
+
+            // =================================================================
+            // EVENTOS DO PLAYER EM TELA CHEIA E OSD
+            // =================================================================
+            const overlay = document.getElementById('fullscreenPlayerOverlay');
+            overlay.addEventListener('mousemove', showPlayerOsd);
+            overlay.addEventListener('touchstart', showPlayerOsd, { passive: true });
+            video.addEventListener('click', () => {
+                if (state.isMiniGuideOpen) {
+                    toggleMiniGuideDrawer(false);
+                } else {
+                    showPlayerOsd();
+                }
+            });
+
+            document.getElementById('osdClosePlayerBtn').addEventListener('click', closeFullscreenPlayer);
+            document.getElementById('osdPrevChannelBtn').addEventListener('click', () => switchChannelRelative(-1));
+            document.getElementById('osdNextChannelBtn').addEventListener('click', () => switchChannelRelative(1));
+
+            document.getElementById('osdPlayPauseBtn').addEventListener('click', () => {
+                if (video.paused) video.play().catch(() => {});
+                else video.pause();
+                showPlayerOsd();
+            });
+
+            video.addEventListener('play', () => {
+                document.getElementById('osdPlayPauseIcon').className = 'ph-fill ph-pause text-xl';
+            });
+
+            video.addEventListener('pause', () => {
+                document.getElementById('osdPlayPauseIcon').className = 'ph-fill ph-play text-xl';
+            });
+
+            // Volume / Mute
+            document.getElementById('osdMuteBtn').addEventListener('click', () => {
+                video.muted = !video.muted;
+                document.getElementById('osdVolumeIcon').className = video.muted
+                    ? 'ph-fill ph-speaker-slash text-rose-400 text-lg'
+                    : 'ph-fill ph-speaker-high text-lg';
+            });
+
+            // Seletor de Qualidade HLS
+            document.getElementById('osdQualitySelect').addEventListener('change', (e) => {
+                if (state.hls) {
+                    state.hls.currentLevel = parseInt(e.target.value, 10);
+                    showToast('Qualidade de vídeo ajustada.', 'info');
+                }
+            });
+
+            // Favoritar no OSD
+            document.getElementById('osdFavBtn').addEventListener('click', () => {
+                if (state.currentPlayingChannel) {
+                    toggleFavoriteChannel(state.currentPlayingChannel);
+                }
+            });
+
+            // Fullscreen Nativo
+            document.getElementById('osdNativeFullscreenBtn').addEventListener('click', async () => {
+                try {
+                    if (!document.fullscreenElement) {
+                        await overlay.requestFullscreen();
+                    } else {
+                        await document.exitFullscreen();
+                    }
+                } catch (e) {}
+            });
+
+            // Barra de Seek para VOD
+            const seekInput = document.getElementById('osdSeekInput');
+            video.addEventListener('timeupdate', () => {
+                if (video.duration && isFinite(video.duration)) {
+                    const pct = (video.currentTime / video.duration) * 100;
+                    seekInput.value = pct;
+                    document.getElementById('osdCurrentTime').textContent = formatSeconds(video.currentTime);
+                    document.getElementById('osdDurationTime').textContent = formatSeconds(video.duration);
+                }
+            });
+
+            seekInput.addEventListener('input', (e) => {
+                if (video.duration && isFinite(video.duration)) {
+                    video.currentTime = (parseFloat(e.target.value) / 100) * video.duration;
+                }
+            });
+
+            // Mini-Guia Lateral
+            document.getElementById('osdToggleMiniGuideBtn').addEventListener('click', () => toggleMiniGuideDrawer());
+            document.getElementById('closeMiniGuideBtn').addEventListener('click', () => toggleMiniGuideDrawer(false));
+            document.getElementById('miniGuideSearchInput').addEventListener('input', (e) => {
+                renderMiniGuideChannels(e.target.value);
+            });
+
+            // Botões da Tela de Erro do Player
+            document.getElementById('errorRetryBtn').addEventListener('click', () => {
+                if (state.currentPlayingChannel) loadChannelInFullscreenPlayer(state.currentPlayingChannel);
+            });
+            document.getElementById('errorNextChannelBtn').addEventListener('click', () => switchChannelRelative(1));
+            document.getElementById('errorCopyUrlBtn').addEventListener('click', () => {
+                if (!state.currentPlayingChannel) return;
+                const temp = document.createElement('textarea');
+                temp.value = state.currentPlayingChannel.url;
+                document.body.appendChild(temp);
+                temp.select();
+                document.execCommand('copy');
+                document.body.removeChild(temp);
+                showToast('URL copiada para abrir no VLC / player externo!', 'success');
+            });
+            document.getElementById('errorExitBtn').addEventListener('click', closeFullscreenPlayer);
+
+            // =================================================================
+            // CONTROLE REMOTO DE TV / TECLADO GLOBAL (D-PAD, CH+, CH-, BACK)
+            // =================================================================
+            window.addEventListener('keydown', (e) => {
+                const tag = document.activeElement ? document.activeElement.tagName : '';
+                const isTyping = (tag === 'INPUT' || tag === 'TEXTAREA') && document.activeElement.type !== 'checkbox' && document.activeElement.type !== 'range';
+
+                // 1. Se o Player em Tela Cheia estiver aberto:
+                if (state.isPlayerOpen) {
+                    showPlayerOsd();
+
+                    if (e.key === 'Escape' || (e.key === 'Backspace' && !isTyping)) {
+                        e.preventDefault();
+                        if (state.isMiniGuideOpen) {
+                            toggleMiniGuideDrawer(false);
+                        } else {
+                            closeFullscreenPlayer();
+                        }
+                        return;
+                    }
+
+                    // Se o Mini-Guia não estiver aberto, Setas Cima/Baixo ou PageUp/PageDown trocam de canal instantaneamente como na TV!
+                    if (!state.isMiniGuideOpen && document.getElementById('playerErrorScreen').classList.contains('hidden')) {
+                        if (e.key === 'ArrowUp' || e.key === 'PageUp' || e.key === 'ChannelUp') {
+                            e.preventDefault();
+                            switchChannelRelative(-1);
+                            return;
+                        }
+                        if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === 'ChannelDown') {
+                            e.preventDefault();
+                            switchChannelRelative(1);
+                            return;
+                        }
+                        if (e.key === ' ') {
+                            e.preventDefault();
+                            if (video.paused) video.play().catch(() => {});
+                            else video.pause();
+                            return;
+                        }
+                        if (e.key === 'g' || e.key === 'G') {
+                            e.preventDefault();
+                            toggleMiniGuideDrawer();
+                            return;
+                        }
+                    }
+
+                    // Navegação por setas dentro do OSD ou Mini-Guia
+                    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && !isTyping) {
+                        e.preventDefault();
+                        handleSpatialNavigation(e.key);
+                    }
+                    return;
+                }
+
+                // 2. Se o Modal de Listas estiver aberto:
+                const modal = document.getElementById('playlistManagerModal');
+                if (!modal.classList.contains('hidden')) {
+                    if (e.key === 'Escape') {
+                        e.preventDefault();
+                        closePlaylistManagerModal();
+                        return;
+                    }
+                    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && !isTyping) {
+                        e.preventDefault();
+                        handleSpatialNavigation(e.key);
+                    }
+                    return;
+                }
+
+                // 3. Navegação na Grade Principal da TV:
+                if (!isTyping) {
+                    if (e.key === 'PageDown') {
+                        e.preventDefault();
+                        document.getElementById('nextPageBtn').click();
+                        return;
+                    }
+                    if (e.key === 'PageUp') {
+                        e.preventDefault();
+                        document.getElementById('prevPageBtn').click();
+                        return;
+                    }
+                    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                        e.preventDefault();
+                        handleSpatialNavigation(e.key);
+                    }
+                } else if (e.key === 'Escape') {
+                    document.activeElement.blur();
+                }
+            });
+        }
+
+        /**
+         * 13. INICIALIZAÇÃO: CARREGA LISTAS SALVAS DO INDEXEDDB OU ABRE GERENCIADOR
+         */
+        window.addEventListener('DOMContentLoaded', async () => {
+            initEventListeners();
+
+            const savedPlaylists = await dbGetAllPlaylists();
+            state.playlists = savedPlaylists;
+            rebuildMergedChannels();
+
+            // Se o usuário ainda não tem nenhuma lista salva, abre diretamente o gerenciador de listas (sem canais demo)
+            if (state.playlists.length === 0) {
+                openPlaylistManagerModal();
+            } else {
+                // Foca no primeiro card da grade para navegação imediata por controle remoto
+                setTimeout(() => {
+                    const firstCard = document.querySelector('#mediaGridContainer .tv-focusable');
+                    if (firstCard) firstCard.focus();
+                }, 120);
+            }
+        });
+    </script>
+</body>
+</html>
